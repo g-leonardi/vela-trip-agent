@@ -1,0 +1,105 @@
+# Brief per la sessione pubblica di esecuzione
+
+Questo è il primo messaggio da incollare nella sessione Claude Code aperta a
+foglio bianco dentro questa cartella. Non è un elenco di task — è direzione e
+vincoli. La scomposizione in sotto-agenti è compito tuo, adattala a quello che
+scopri mano a mano (specifiche reali dell'API, qualità di Workers AI, ecc.),
+non seguire uno script rigido.
+
+## Missione
+
+Costruire un prototipo funzionante di prenotazione viaggi padel/tennis +
+hotel, headless, conversazionale, contro la House of Journeys API reale
+(HOFJ — docs.api.hofj.com, spec su api.hofj.com/v1/openapi.json). Non un sito
+di prenotazione — quello che lo sostituisce. Deve arrivare a una prenotazione
+vera con codice di conferma reale, pagamento Stripe in test mode.
+
+## Vincoli non negoziabili (rompere uno di questi azzera il punteggio)
+
+- Nessuna pagina di risultati, nessun filtro, nessuna griglia prodotti,
+  nessuna tabella comparativa.
+- Il viaggiatore non riceve mai una lista tra cui scegliere. Una proposta
+  alla volta, mai due opzioni nella stessa battuta. Solo se l'utente rifiuta
+  esplicitamente la prima, si passa alla successiva.
+- L'intero acquisto parte da un singolo intento espresso in linguaggio
+  naturale.
+- Scope: solo padel/tennis + hotel. Niente voli/transfer/auto.
+
+## Pattern di interazione
+
+Slot-filling (chiede solo ciò che manca: sport, città, date, budget,
+maestro/preferenze) → negoziazione se qualcosa non torna (data non
+disponibile, budget insufficiente: "non riesco a 300, riesco a 500, procedo?")
+→ proposta singola con prezzo → conferma esplicita → **ri-verifica silenziosa
+di prezzo/disponibilità prima di chiudere** (l'inventario è vero e condiviso,
+può essere cambiato nel frattempo) → prenotazione reale + pagamento →
+riepilogo operativo finale ("hai speso X, ecco il programma").
+
+## Linguaggio e toolchain (deciso, non lasciato all'agente)
+
+TypeScript su tutta la linea — è il linguaggio nativo di Cloudflare Workers,
+con binding tipizzati per Durable Objects e Workers AI, ed è quello con cui
+è più veloce rivedere il codice. `wrangler` per dev/deploy, `npm` come
+package manager, `vitest` per i test (è lo standard consigliato per i
+Workers). Decisione fissata qui apposta: se ogni sotto-agente scegliesse da
+sé, il rischio concreto è incoerenza tra i pezzi (un agente in Python, uno in
+JS) in un singolo Worker deployabile — non è un dettaglio da lasciare
+all'improvvisazione.
+
+## Stack deciso
+
+- Frontend: pagina minimale, campo di testo (+ eventuale Speech-to-Text
+  browser), trascrizione della conversazione. Niente altro.
+- Backend: Cloudflare Worker, un Durable Object per conversazione attiva
+  (stato + serve anche a bloccare l'inventario scelto durante la conferma,
+  evitando doppie prenotazioni in conversazioni parallele).
+- Motore di ragionamento: **Workers AI** (modello open-weight, gratuito
+  entro la soglia) come prima scelta — verificarne per prima cosa la qualità
+  su un caso reale prima di costruirci sopra tutto. Fallback: API Anthropic
+  metered (Haiku, costo minimo) se la qualità non regge il negoziato
+  "unhappy path". Mai `claude -p`/CLI in produzione — è legato all'account
+  personale, non deployabile per un utente terzo.
+- Le credenziali HOFJ (baseUrl, apiKey) sono in `CREDENZIALI.local.md`
+  (gitignorato) — leggerle da lì o da variabili d'ambiente, mai incollarle
+  in chiaro in nessun prompt o commit.
+
+## Pipeline dati HOFJ (come si aggregano le informazioni)
+
+Non esiste un endpoint unico "trova tutto". Sequenza tipica: risolvi
+destinazione/categoria (`/v1/destinations`, `/v1/categories`, `/v1/venues`,
+o direttamente `/v1/recommendations/search` se si rivela già un buon motore
+di ricerca ordinata — verificarlo per primo) → prodotto candidato → apri il
+carrello (`POST /v1/itineraries`) → leggi opzioni dentro il carrello
+(`GET .../accommodations`, `GET .../activities`) → seleziona
+(`PATCH`/equivalenti) → dati viaggiatore (`.../pax`, `.../customer`) →
+pagamento (`.../payment`, Stripe test mode) → `POST /v1/bookings` per
+chiudere davvero.
+
+**Rate limit**: rolling window, più stretto di quanto sembri (`GET
+/v1/quota` per controllarlo). Il motore deve essere economico nelle
+chiamate — non provare tutte le combinazioni possibili, usare le chiamate di
+ricerca ampie prima di quelle di dettaglio costose, mettere in cache ciò che
+cambia poco (categorie, destinazioni, venue).
+
+## Disciplina di processo (non opzionale, viene verificata)
+
+- **Commit incrementali con messaggi veri**, non un commit finale gigante —
+  i timestamp dei commit vengono incrociati con i log degli agenti e con gli
+  eventi pausa/ripresa registrati dal loro server.
+- **Deploy presto e spesso**: l'URL live deve esistere ben prima della
+  scadenza, non comparire all'ultimo minuto.
+- Test insieme al codice che testano, non rimandati alla fine.
+- Niente astrazioni premature, niente feature non richieste: scope stretto,
+  fedele al manifesto.
+- Multi-agente dove ha senso (pezzi grandi e indipendenti: scaffold
+  Worker+DO, client HOFJ, load test, review pre-commit) — non un agente per
+  ogni file.
+- Gestire esplicitamente il caso "prodotto non prenotabile" / inventario
+  misconfigurato (il brief avverte che esiste davvero).
+
+## Deliverable da tenere a mente per tutta la sessione, non solo alla fine
+
+URL live raggiungibile, repo pubblica con history intatta, `ARCHITECTURE.md`
+aggiornato via via, `/agent-log/` (questi transcript, esportati a fine
+sessione), load test k6 (`loadtest/booking-flow.js`, già scaffoldato) con
+numeri veri, video 3-5 min di un acquisto reale end-to-end.
