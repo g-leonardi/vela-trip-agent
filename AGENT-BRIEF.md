@@ -85,11 +85,18 @@ carrello (`POST /v1/itineraries`) → leggi opzioni dentro il carrello
 pagamento (`.../payment`, Stripe test mode) → `POST /v1/bookings` per
 chiudere davvero.
 
-**Rate limit**: rolling window, più stretto di quanto sembri (`GET
-/v1/quota` per controllarlo). Il motore deve essere economico nelle
-chiamate — non provare tutte le combinazioni possibili, usare le chiamate di
-ricerca ampie prima di quelle di dettaglio costose, mettere in cache ciò che
-cambia poco (categorie, destinazioni, venue).
+**Rate limit — verificato prima di Start**: la API key nel `CREDENZIALI.local.md`
+funziona già come `Authorization: Bearer <key>` diretto su `api.hofj.com`
+(non serve passare da `/v1/oauth/token`). `GET /v1/quota` risponde con
+`limitPerMinute: 120`, finestra scorrevole di 60s, `clientId: "test-developer"`
+(stringa generica — non è chiaro se il bucket è condiviso con altri
+candidati, quindi restare comunque parsimoniosi). 120/min sembra tanto ma
+una singola conversazione può facilmente costare 5-6 chiamate in sequenza
+(destinazione → categoria/prodotto → itinerario → accommodations →
+activities) — il motore deve essere economico: usare le chiamate di ricerca
+ampie prima di quelle di dettaglio costose, mettere in cache ciò che cambia
+poco (categorie, destinazioni, venue), controllare `/v1/quota` prima di
+raffiche di chiamate.
 
 ## Cosa leggono davvero i valutatori, e con che peso
 
