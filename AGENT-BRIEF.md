@@ -81,6 +81,33 @@ chiamate — non provare tutte le combinazioni possibili, usare le chiamate di
 ricerca ampie prima di quelle di dettaglio costose, mettere in cache ciò che
 cambia poco (categorie, destinazioni, venue).
 
+## Cosa leggono davvero i valutatori, e con che peso
+
+Questo non è un esercizio a scatola chiusa: sanno esattamente cosa cercano,
+e conviene lavorare sapendolo anche noi, non solo io.
+
+- **Pesi dello scoring**: prototipo che completa un booking reale 25%,
+  architettura di scalabilità 25%, vision "sei uscito dal marketplace?" 20%,
+  metodo agentico dimostrato 15%, padronanza API 10%, comunicazione 5%.
+  Tradotto: prototipo funzionante + scalabilità valgono da soli metà del
+  voto — non passare ore a rifinire dettagli di comunicazione (5%) se il
+  booking reale non chiude ancora.
+- **Leggono `ARCHITECTURE.md` per davvero**: decisioni, trade-off, cosa
+  faresti dopo. Non è un file da riempire a fine sessione — va aggiornato
+  mentre si lavora, con le scelte vere fatte nel momento in cui sono state
+  fatte (incluso il perché di eventuali ripensamenti).
+- **Leggono `/agent-log/` come trascrizioni raw**, non un riassunto scritto
+  a posteriori. Citazione testuale dal brief: *"Raw exports, not a write-up
+  about them."*
+- **Incrociano tre timeline**: i timestamp nei log degli agenti, la
+  cronologia dei commit, e gli eventi di pausa/ripresa registrati dal loro
+  server. Devono raccontare la stessa storia coerente.
+- Citazione testuale che vale come criterio guida per ogni scelta di
+  processo: *"A tidy repository with no evidence of how it got there scores
+  badly. A messy one with a clear, well-directed agent trail scores well."*
+  Meglio un repo con qualche tentativo fallito visibile e ben diretto, che
+  uno linderato ma senza traccia di come ci si è arrivati.
+
 ## Disciplina di processo (non opzionale, viene verificata)
 
 - **Commit incrementali con messaggi veri**, non un commit finale gigante —
