@@ -22,7 +22,17 @@ vera con codice di conferma reale, pagamento Stripe in test mode.
   alla volta, mai due opzioni nella stessa battuta. Solo se l'utente rifiuta
   esplicitamente la prima, si passa alla successiva.
 - L'intero acquisto parte da un singolo intento espresso in linguaggio
-  naturale.
+  naturale, con parole proprie del viaggiatore.
+- **L'attenzione del viaggiatore non è su uno schermo per la maggior parte
+  dell'interazione** — è il vero motivo per cui l'interfaccia è vocale/
+  conversazionale, non "una chat invece di una lista". Non ripiegare su una
+  semplice chat testuale come se fosse equivalente: resta il north star,
+  anche nella versione minimale che il tempo reale ci permette di costruire.
+- **Non tutti gli acquirenti hanno occhi, uno schermo, o pazienza** —
+  vincolo di accessibilità reale, non un modo di dire.
+- Vela non è una destinazione: il viaggiatore non viene da voi, è l'agente
+  che arriva dove il viaggiatore già è (nella versione minimale: un client
+  che simula questo, non un sito da visitare attivamente).
 - Scope: solo padel/tennis + hotel. Niente voli/transfer/auto.
 
 ## Pattern di interazione
