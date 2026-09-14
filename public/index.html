@@ -23,10 +23,9 @@
   }
   main { width: 100%; max-width: 640px; }
 
-  .brandline { display: flex; align-items: baseline; gap: 8px; margin: 0 0 2px; }
+  .brandline { display: flex; align-items: baseline; gap: 8px; margin: 0 0 18px; }
   h1 { font-size: 1.25rem; font-weight: 700; margin: 0; letter-spacing: 0.01em; }
   .by { color: var(--muted); font-size: 0.78rem; margin: 0; }
-  p.tagline { color: var(--muted); font-size: 0.9rem; margin: 6px 0 18px; max-width: 46ch; }
 
   /* Framing device: this whole app is a stand-in for a wearable, not a
      "real" web product — the squircle mimics a watch face on purpose, and
@@ -53,7 +52,7 @@
     width: 92px; height: 92px; border-radius: 50%; border: none; flex-shrink: 0;
     background: #1c2725; color: var(--accent);
     display: flex; align-items: center; justify-content: center;
-    font-size: 2.1rem; cursor: pointer; transition: transform 0.15s, background 0.15s, color 0.15s;
+    cursor: pointer; transition: transform 0.15s, background 0.15s, color 0.15s;
   }
   #mic:active { transform: scale(0.96); }
   #mic.listening { background: var(--accent); color: #0e1414; animation: pulse 1.4s infinite; }
@@ -99,16 +98,22 @@
 <main>
   <div class="brandline">
     <h1>Rally</h1>
-    <p class="by">un progetto Vela</p>
+    <p class="by">un progetto di Giuseppe Leonardi</p>
   </div>
-  <p class="tagline">Non un sito di prenotazione: parlagli come parleresti a un umano. Padel, tennis, hotel — una richiesta, in una frase.</p>
 
   <p class="device-caption">Anteprima da browser — nel 2029 Rally vive al polso, non su uno schermo. Questo è solo un prototipo.</p>
 
   <div class="device">
     <div class="device-inner">
       <div id="status" aria-live="polite">Tocca per parlare</div>
-      <button id="mic" aria-label="Parla con Rally">🎙️</button>
+      <button id="mic" aria-label="Parla con Rally">
+        <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+          <path d="M5 11a7 7 0 0 0 14 0"></path>
+          <line x1="12" y1="18" x2="12" y2="22"></line>
+          <line x1="8" y1="22" x2="16" y2="22"></line>
+        </svg>
+      </button>
       <div id="lastReply" aria-live="polite"></div>
     </div>
   </div>
