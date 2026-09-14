@@ -19,12 +19,14 @@
   "durable_objects": {
     "bindings": [
       { "name": "CONVERSATION", "class_name": "ConversationDO" },
-      { "name": "USER_PROFILE", "class_name": "UserProfileDO" }
+      { "name": "USER_PROFILE", "class_name": "UserProfileDO" },
+      { "name": "FOLLOWUP", "class_name": "FollowUpDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["UserProfileDO"] }
+    { "tag": "v2", "new_sqlite_classes": ["UserProfileDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["FollowUpDO"] }
   ],
   "vars": {
     "HOFJ_BASE_URL": "https://api.hofj.com",

@@ -179,7 +179,16 @@ export type SayDirective =
       correction?: boolean;
     }
   | { kind: "reverifying" }
-  | { kind: "price_changed"; oldPrice: string; newPrice: string }
+  | {
+      kind: "price_changed";
+      oldPrice: string;
+      newPrice: string;
+      /** The REAL, verified cause when we know it (see
+       * openRealCartAndAttemptPayment, conversation.ts) — e.g. the price
+       * scaling with party size. Only ever set from something actually
+       * checked, never a guess. */
+      reason?: string;
+    }
   | { kind: "payment_unavailable"; retrying: boolean }
   | { kind: "booking_forbidden" }
   | { kind: "booking_unverified" }
@@ -267,7 +276,9 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
     case "reverifying":
       return `Di' in una frase breve che stai ricontrollando prezzo e disponibilità reali prima di chiudere, perché l'inventario è condiviso e potrebbe essere cambiato nel frattempo. Tono rassicurante.`;
     case "price_changed":
-      return `Il prezzo è cambiato nel frattempo: era ${d.oldPrice}, ora è ${d.newPrice}. Comunicalo con onestà e chiedi se vuole procedere comunque al nuovo prezzo.`;
+      return d.reason
+        ? `Il prezzo reale è diverso da quello mostrato prima: era ${d.oldPrice}, ora è ${d.newPrice}. Il motivo vero, verificato: ${d.reason}. Spiegalo con questa esatta ragione, in una frase naturale — non è un rincaro a sorpresa né "il mercato è dinamico", è il calcolo giusto per la richiesta fatta. Poi chiedi se vuole procedere al prezzo reale.`
+        : `Il prezzo è cambiato nel frattempo: era ${d.oldPrice}, ora è ${d.newPrice}. Comunicalo con onestà SENZA inventare una causa (non sappiamo il motivo esatto, quindi non dire "il mercato è dinamico" o simili) — limitati al fatto, poi chiedi se vuole procedere comunque al nuovo prezzo.`;
     case "payment_unavailable":
       return d.retrying
         ? `Il sistema di pagamento non risponde in questo momento. Di' che ci stai riprovando subito, tono rassicurante, una frase.`
@@ -281,7 +292,7 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
       // check — see ARCHITECTURE.md). Never tell the traveller "booked"
       // on a signal we've proven unreliable — this is the honest
       // alternative when that happens, not a generic error.
-      return `Hai provato a confermare la prenotazione (il pagamento è già andato a buon fine, quello è sicuro), ma il sistema del fornitore non ti dà conferma certa che la prenotazione sia stata registrata per davvero — non vuoi dire "prenotato" se non ne sei sicuro. Spiegalo con onestà in una frase, poi chiedi se preferisce che ci riprovi tra poco o che lasci i suoi dati per essere ricontattato appena il fornitore conferma.`;
+      return `Hai provato a confermare la prenotazione (il pagamento è già andato a buon fine, quello è sicuro), ma il sistema del fornitore non ti dà conferma certa che la prenotazione sia stata registrata per davvero — non vuoi dire "prenotato" se non ne sei sicuro. Spiegalo con onestà in una frase. I suoi dati sono GIÀ stati registrati per un follow-up (non serve chiederglieli di nuovo, li hai già), quindi rassicuralo che verrà ricontattato non appena il fornitore conferma, e chiedi solo se nel frattempo preferisce che ci riprovi subito.`;
     case "booked":
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
     case "no_match": {

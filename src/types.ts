@@ -3,6 +3,7 @@ export interface Env {
   ASSETS: Fetcher;
   CONVERSATION: DurableObjectNamespace<import("./conversation").ConversationDO>;
   USER_PROFILE: DurableObjectNamespace<import("./userProfile").UserProfileDO>;
+  FOLLOWUP: DurableObjectNamespace<import("./followUp").FollowUpDO>;
   HOFJ_BASE_URL: string;
   HOFJ_BRAND: string;
   HOFJ_LOCALE: string;
@@ -275,4 +276,34 @@ export interface ConversationState {
    * proposal replaces the current one, so a later question never answers
    * from a stale, different candidate's description. */
   productDescription: string | null;
+  /** How many times "riprova" has been tried specifically for a booking
+   * confirmation that already had a real, successful payment behind it —
+   * capped (see BOOKING_RETRY_LIMIT, conversation.ts) so the traveller
+   * isn't strung along indefinitely on an upstream fault that has
+   * already proven not to be transient (verified live 2026-09-15: the
+   * same itinerary's checkout.status was still "BookingInitiated" long
+   * after the original attempt, not an eventual-consistency delay). */
+  bookingRetryCount: number;
+  /** Whether this conversation's stuck-booking details (real payment
+   * succeeded, booking never confirmed) have already been written to
+   * FollowUpDO — set once so repeated retries don't log duplicate
+   * entries for the same conversation. */
+  followUpLogged: boolean;
+}
+
+/** A durably logged real payment whose booking never got a confirmed
+ * status from HOFJ — see FollowUpDO (followUp.ts). This is what actually
+ * backs the "lascia i tuoi dati, ti ricontatto" promise in
+ * booking_unverified's message: without it, that line was just words,
+ * nothing captured the traveller's details anywhere a human could act
+ * on them once the conversation was abandoned. */
+export interface FollowUpEntry {
+  itineraryId: string;
+  brand: string;
+  paymentIntentId: string;
+  amount: string;
+  currency: string;
+  traveller: { firstName: string | null; lastName: string | null; email: string | null; phone: string | null };
+  failureReason: string;
+  recordedAt: number;
 }

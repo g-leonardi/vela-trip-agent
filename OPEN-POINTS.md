@@ -3,6 +3,32 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Il prezzo che raddoppia — spiegato, non più un mistero (2026-09-15 ~00:20, sessionId `04022cc9-...`)
+
+Giuseppe aveva notato il pattern e chiesto se fosse legato al numero di
+persone. Confermato con numeri reali: `search()` non manda mai `adults`,
+quindi il suo prezzo è per l'occupazione di default del pacchetto; il
+carrello reale scala per davvero con la comitiva (verificato: 1 adulto
+465€, 2 adulti 730€, 3 adulti 1195€ sullo stesso prodotto). Il messaggio
+"il mercato è dinamico" era un'invenzione del modello, mai un'istruzione
+nostra. **Corretto**: quando il rapporto combacia con `adults`, diciamo
+al modello la ragione vera; quando non la sappiamo, gli diciamo
+esplicitamente di non inventarne una. Vedi `ARCHITECTURE.md`.
+
+## Robustezza sul booking non verificabile (2026-09-15 ~00:20)
+
+Due mancanze reali, corrette: (1) "riprova" non aveva limite anche su un
+fallimento già dimostrato non transitorio — ora capped a 2 tentativi,
+poi un messaggio onesto invece di continuare a promettere che riprovare
+serva ancora; (2) la promessa "lascia i tuoi dati" non aveva nessun
+meccanismo dietro — ora un nuovo `FollowUpDO` registra automaticamente
+(una volta sola per conversazione) ogni pagamento reale riuscito la cui
+prenotazione non si conferma, con tutti i dati per una riconciliazione
+manuale. Deliberatamente non esposto via HTTP (contatti reali + un vero
+Stripe PaymentIntent id, nessun layer di autenticazione in questo
+prototipo per proteggere una lettura pubblica in sicurezza). Verificato
+dal vivo end-to-end. Vedi `ARCHITECTURE.md` per il dettaglio.
+
 ## Bloccanti storici, ENTRAMBI risolti lato HOFJ (2026-09-14 ~21:35) — vedi sotto per lo stato attuale
 
 - ~~**`POST /v1/bookings` rifiuta sempre con `paymentType` invalid_value**~~

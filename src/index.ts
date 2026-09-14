@@ -2,6 +2,7 @@ import { isProfileComplete, type Env } from "./types";
 
 export { ConversationDO } from "./conversation";
 export { UserProfileDO } from "./userProfile";
+export { FollowUpDO } from "./followUp";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {

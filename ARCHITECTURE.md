@@ -424,6 +424,76 @@ poi un "procedi pure" successivo è passato correttamente a
 `collecting_traveller` — la domanda non ha rotto il flusso di
 conferma.
 
+### "Il prezzo raddoppia sempre" — non era il mercato, era il numero di persone (2026-09-15 ~00:20, sessionId `04022cc9-...`)
+
+Giuseppe ha notato un pattern: il prezzo mostrato in ricerca (365€) e
+quello reale del carrello aperto (730€) erano sempre esattamente il
+doppio, e ha chiesto se fosse legato al numero di persone. **Verificato
+dal vivo che ha ragione, con i numeri**: `HofjClient.search()` non manda
+MAI un parametro `adults` (non esiste nemmeno nella firma del metodo) —
+il prezzo di ricerca è quindi tariffato per l'occupazione di default del
+pacchetto, non per la comitiva reale. Creando itinerary reali con party
+size diverse sullo stesso prodotto:
+```
+1 adulto, 1 stanza:  465€ (attività 365€ a persona + 100€ supplemento camera singola)
+2 adulti, 1 stanza:  730€ (attività 365€ × 2 — camera doppia inclusa nel pacchetto, nessun supplemento)
+3 adulti, 2 stanze: 1195€ (attività 365€ × 3 + 100€ supplemento)
+```
+Il prezzo scala per davvero, in modo deterministico, con il numero di
+partecipanti — non è mai stato un capriccio del mercato. Il messaggio
+precedente ("il mercato è dinamico") era un'invenzione del modello
+stesso: non era un'istruzione che gli avevamo dato, l'ha aggiunta di suo
+come abbellimento plausibile ma falso.
+
+**Corretto**: quando il rapporto tra prezzo reale e prezzo proposto
+combacia con il numero di adulti (entro una tolleranza per i supplementi
+di stanza), passiamo al modello la ragione VERA verificata, e gli
+diciamo esplicitamente di usarla invece di inventare — e quando NON
+sappiamo la ragione esatta, gli diciamo esplicitamente di non
+inventarne una ("non dire 'il mercato è dinamico' o simili"). Verificato
+dal vivo dopo il fix: "il 365 che hai visto era la tariffa per persona —
+voi siete in due, quindi il totale è 730€: è il calcolo corretto per la
+vostra comitiva."
+
+### Rendere più robusta l'assenza di un segnale "booked" affidabile (2026-09-15 ~00:20)
+
+Giuseppe ha chiesto: dato che l'API non ci dà una conferma affidabile
+della prenotazione (vedi sezione precedente sul booking non
+verificabile), come rendiamo il sistema più robusto? Due mancanze reali
+trovate e corrette:
+
+1. **"Riprova" non aveva limite**: un fallimento già dimostrato non
+   transitorio (lo stesso itinerary della sessione di Giuseppe è rimasto
+   `"BookingInitiated"` anche minuti dopo, non un ritardo di
+   propagazione) permetteva comunque un "riprova" infinito, illudendo che
+   prima o poi si sarebbe sbloccato. **Corretto**: `BOOKING_RETRY_LIMIT =
+   2` — dopo due tentativi falliti, il messaggio cambia onestamente ("non
+   è più un blip temporaneo") invece di continuare a proporre "riprova"
+   come se servisse ancora a qualcosa.
+2. **La promessa "lascia i tuoi dati, ti ricontatto" non era vera**: non
+   esisteva alcun meccanismo che catturasse davvero i dati del
+   viaggiatore da qualche parte ispezionabile — erano solo parole dette
+   dal modello, che sparivano se la conversazione veniva abbandonata.
+   **Corretto**: nuovo `FollowUpDO` (`src/followUp.ts`), un'unica istanza
+   nota per tutto il deployment, che registra {itineraryId, brand,
+   paymentIntentId, importo, contatti del viaggiatore, motivo del
+   fallimento} ogni volta che un pagamento reale riesce ma la
+   prenotazione non si conferma — una volta sola per conversazione,
+   scritta in automatico, non su richiesta esplicita del viaggiatore (i
+   suoi dati li abbiamo già, non serve chiederglieli di nuovo). **Non
+   esposto via HTTP**: quei dati includono contatti reali e un vero id di
+   pagamento Stripe, e questo prototipo non ha un livello di
+   autenticazione per proteggere un endpoint di lettura in modo sicuro —
+   ispezionarlo oggi significa leggere lo storage del Durable Object
+   direttamente (tramite `wrangler`), non una route pubblica. Scelta di
+   scope consapevole, non una svista.
+
+Verificato dal vivo end-to-end: un pagamento reale riuscito con
+prenotazione non confermata → `followUpLogged: true` nello stato, nessun
+errore nei log; due "riprova" consecutivi → `bookingRetryCount` sale a 2;
+un terzo tentativo → messaggio finale onesto con l'importo pagato e il
+riferimento dell'itinerary, invece di un ennesimo "riprova" vuoto.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

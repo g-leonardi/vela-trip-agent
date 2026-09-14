@@ -27,6 +27,12 @@ const REQUIRED_TRAVELLER_FIELDS: (keyof TravellerInfo)[] = ["firstName", "lastNa
 const PRICE_CHANGE_TOLERANCE = 0.01; // 1% — floating point / rounding noise only
 const CITY_LOOP_BREAKER = 2; // consecutive stuck turns before city gets bypassed
 const BUDGET_LOOP_BREAKER = 1; // ask once; if still unanswered next time, decide (cheapest) and disclose it
+// Verified live 2026-09-15: the same stuck itinerary's checkout.status was
+// still "BookingInitiated" long after the original attempt — not an
+// eventual-consistency delay that a few more retries would fix. Capping
+// this means "riprova" stops being a false promise once it's clearly a
+// standing fault, not a blip.
+const BOOKING_RETRY_LIMIT = 2;
 
 function initialState(): ConversationState {
   return {
@@ -55,6 +61,8 @@ function initialState(): ConversationState {
     economicTierHint: null,
     preferredSportHint: null,
     productDescription: null,
+    bookingRetryCount: 0,
+    followUpLogged: false,
   };
 }
 
@@ -162,8 +170,9 @@ export class ConversationDO extends DurableObject<Env> {
     // never re-pay for something already paid.
     if (state.stage === "failed") {
       const wantsRetry = /riprova|di nuovo|ritenta|prova ancora|retry/i.test(text);
+      const isBookingFailure = state.failureReason?.startsWith("bookings:") ?? false;
       const paymentRetryable = state.failureReason?.startsWith("payment:") && state.itineraryId;
-      const bookingRetryable = state.failureReason?.startsWith("bookings:") && state.itineraryId;
+      const bookingRetryable = isBookingFailure && state.itineraryId && state.bookingRetryCount < BOOKING_RETRY_LIMIT;
       if (wantsRetry && paymentRetryable) {
         const reply = await this.attemptPayment(state);
         state.messages.push({ role: "agent", text: reply, at: Date.now() });
@@ -171,6 +180,7 @@ export class ConversationDO extends DurableObject<Env> {
         return { reply, state };
       }
       if (wantsRetry && bookingRetryable) {
+        state.bookingRetryCount += 1;
         const reply = await this.confirmBookingNow(state, "full");
         state.messages.push({ role: "agent", text: reply, at: Date.now() });
         await this.saveState(state);
@@ -180,7 +190,9 @@ export class ConversationDO extends DurableObject<Env> {
         ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi, oppure apri una nuova conversazione.`
         : bookingRetryable
           ? `Il pagamento è andato a buon fine, ma non riesco ancora a confermare la prenotazione. Dimmi "riprova" per ritentare solo quella parte.`
-          : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
+          : isBookingFailure
+            ? `Ho riprovato più volte a confermare la prenotazione, ma il sistema del fornitore continua a non darmi il via libera — non è più un blip temporaneo. Il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è comunque andato a buon fine, e ho già registrato i tuoi dati per un follow-up manuale (riferimento: ${state.itineraryId}) — ti ricontatteremo appena si sblocca. Apri una nuova conversazione se intanto vuoi provare a prenotare qualcos'altro.`
+            : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
       state.messages.push({ role: "agent", text: reply, at: Date.now() });
       await this.saveState(state);
       return { reply, state };
@@ -634,10 +646,26 @@ export class ConversationDO extends DurableObject<Env> {
         compromise: { kind: "price", requested: `${proposedPrice}€`, offered: `${livePrice}€` },
       };
       state.stage = "proposing";
+      // Verified live 2026-09-15 (sessionId 04022cc9-...) — not "the
+      // market is dynamic" (the model's own invented flourish, never an
+      // instruction we gave it, and not true): search never sends an
+      // adults param at all (HofjClient.search() has no such field), so
+      // its `price` is priced for the package's own built-in default
+      // occupancy — the real per-itinerary total genuinely scales with
+      // the actual party size (verified directly against the API: the
+      // same product's "Tennis Training" activity is billed per pax,
+      // 365€ × adults, plus an occasional room-supplement adjustment
+      // when the party doesn't fit the package's included room type).
+      // When the ratio matches adults cleanly, tell the model the REAL
+      // reason so it says something true and specific instead of
+      // fabricating one.
+      const adults = state.slots.adults ?? 1;
+      const scaledByPartySize = adults > 1 && Math.abs(livePrice - proposedPrice * adults) / (proposedPrice * adults) < 0.15;
       return this.say(state, {
         kind: "price_changed",
         oldPrice: `${proposedPrice}€`,
         newPrice: `${livePrice}€`,
+        reason: scaledByPartySize ? `il prezzo di ricerca è una tariffa di riferimento, il totale reale è calcolato per la vostra comitiva di ${adults} persone` : undefined,
       });
     }
     state.totalPrice = snapshot.data.totalPrice;
@@ -786,6 +814,42 @@ export class ConversationDO extends DurableObject<Env> {
    * `checkout.status` to have actually moved away from
    * "BookingInitiated" before ever telling the traveller "booked" — the
    * one signal that can't be faked by a plausible-looking response. */
+  /** Writes a durable record of a real charge whose booking couldn't be
+   * confirmed, so the "lascia i tuoi dati, ti ricontatto" promise
+   * (booking_unverified/payment_unavailable's wording) is actually backed
+   * by something — see FollowUpDO's doc, followUp.ts. Only when a real
+   * payment actually succeeded (nothing to reconcile otherwise), and only
+   * once per conversation regardless of how many times "riprova" runs. */
+  private async logFollowUpIfNeeded(state: ConversationState): Promise<void> {
+    if (state.followUpLogged || !state.paymentIntentId || !state.itineraryId || !state.brand || !state.totalPrice) return;
+    state.followUpLogged = true;
+    try {
+      await this.env.FOLLOWUP.getByName("registry").record({
+        itineraryId: state.itineraryId,
+        brand: state.brand,
+        paymentIntentId: state.paymentIntentId,
+        amount: state.totalPrice.amount,
+        currency: state.totalPrice.currency,
+        traveller: {
+          firstName: state.traveller.firstName,
+          lastName: state.traveller.lastName,
+          email: state.traveller.email,
+          phone: state.traveller.phone,
+        },
+        failureReason: state.failureReason ?? "",
+        recordedAt: Date.now(),
+      });
+    } catch (err) {
+      // Logging the follow-up itself is a best-effort safety net, not the
+      // primary flow — a failure here shouldn't make the traveller-facing
+      // reply fail too. state.followUpLogged stays true regardless (no
+      // retry loop over this specific write); the conversation's own
+      // durable state still has everything needed if this is ever
+      // revisited by hand.
+      console.error("logFollowUpIfNeeded failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
   private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
     try {
       const payment = state.paymentIntentId
@@ -796,6 +860,7 @@ export class ConversationDO extends DurableObject<Env> {
       if (snapshot.data.checkout.status === "BookingInitiated") {
         state.stage = "failed";
         state.failureReason = `bookings: unverified — checkout.status still "BookingInitiated" after a 200 response`;
+        await this.logFollowUpIfNeeded(state);
         return this.say(state, { kind: "booking_unverified" });
       }
       state.stage = "booked";
@@ -811,9 +876,11 @@ export class ConversationDO extends DurableObject<Env> {
       state.stage = "failed";
       if (err instanceof HofjApiError && err.status === 403) {
         state.failureReason = "bookings: 403 forbidden-entity";
+        await this.logFollowUpIfNeeded(state);
         return this.say(state, { kind: "booking_forbidden" });
       }
       state.failureReason = `bookings: ${err instanceof Error ? err.message : String(err)}`;
+      await this.logFollowUpIfNeeded(state);
       return this.say(state, { kind: "payment_unavailable", retrying: false });
     }
   }
