@@ -14,20 +14,41 @@ function extractJson<T>(raw: string): T | null {
   }
 }
 
+export class AiUnavailableError extends Error {}
+
+// Workers AI occasionally throws a transient "internal error" (observed
+// live, not model-specific — happens across models). Not worth failing an
+// entire conversation over, so retry a couple of times before falling back
+// / giving up — same spirit as the HOFJ client's retry-once-on-transient.
+async function runWorkersAi(env: Env, system: string, user: string): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await env.AI.run(WORKERS_AI_MODEL, {
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.3,
+      });
+      const shaped = res as { response?: unknown; choices?: { message?: { content?: string } }[] };
+      const text =
+        typeof shaped.response === "string" ? shaped.response : shaped.choices?.[0]?.message?.content;
+      if (typeof text === "string" && text.trim().length > 0) return text;
+      throw new Error("empty Workers AI response: " + JSON.stringify(res).slice(0, 300));
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 async function chat(env: Env, system: string, user: string): Promise<string> {
   try {
-    const res = await env.AI.run(WORKERS_AI_MODEL, {
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.3,
-    });
-    const text = (res as { response?: string }).response;
-    if (text && text.trim().length > 0) return text;
-    throw new Error("empty Workers AI response");
+    return await runWorkersAi(env, system, user);
   } catch (err) {
-    if (!env.ANTHROPIC_API_KEY) throw err;
+    if (!env.ANTHROPIC_API_KEY) throw new AiUnavailableError(err instanceof Error ? err.message : String(err));
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -42,16 +63,15 @@ async function chat(env: Env, system: string, user: string): Promise<string> {
         messages: [{ role: "user", content: user }],
       }),
     });
-    if (!res.ok) throw new Error(`Anthropic fallback failed: ${res.status}`);
+    if (!res.ok) throw new AiUnavailableError(`Anthropic fallback failed: ${res.status}`);
     const body = await res.json<{ content: { text: string }[] }>();
     return body.content.map((b) => b.text).join("");
   }
 }
 
-export interface Interpretation {
-  slotUpdates: Partial<Slots>;
+interface RawInterpretation {
+  slotUpdates: Partial<Omit<Slots, "dateFrom" | "dateTo">> & { dateFromText?: string | null; dateToText?: string | null };
   travellerUpdates: Partial<TravellerInfo>;
-  /** Only meaningful right after the agent asked a yes/no question. */
   decision: "yes" | "no" | "unclear";
 }
 
@@ -59,13 +79,13 @@ const INTERPRET_SYSTEM = `Sei il modulo di comprensione di un agente di prenotaz
 Ricevi l'ultimo messaggio del viaggiatore e lo stato attuale noto. Estrai SOLO ciò che è esplicitamente detto o chiaramente implicito, senza inventare.
 Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo, con questa forma esatta:
 {
-  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFrom": "YYYY-MM-DD"|null, "dateTo": "YYYY-MM-DD"|null, "budget": number|null, "adults": number|null, "preferences": string|null },
+  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "adults": number|null, "preferences": string|null },
   "travellerUpdates": { "firstName": string|null, "lastName": string|null, "email": string|null, "phone": string|null, "city": string|null, "postalCode": string|null, "countryCode": string|null },
   "decision": "yes"|"no"|"unclear"
 }
 Regole:
-- Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; ometti (non mettere null a caso) i campi non menzionati — ma se un campo è null nell'oggetto che restituisci, significa "non menzionato ora".
-- Interpreta le date relative (es. "il weekend prossimo", "a ottobre") rispetto a oggi: ${new Date().toISOString().slice(0, 10)}.
+- Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; i campi non menzionati restano null.
+- "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore (es. "il 25 settembre", "il prossimo weekend", "tra due settimane", "domani") — NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico.
 - "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".`;
 
 export async function interpret(
@@ -73,10 +93,10 @@ export async function interpret(
   currentSlots: Slots,
   currentTraveller: TravellerInfo,
   latestUserText: string,
-): Promise<Interpretation> {
+): Promise<RawInterpretation> {
   const user = `Stato attuale: ${JSON.stringify({ slots: currentSlots, traveller: currentTraveller })}\nMessaggio del viaggiatore: "${latestUserText}"`;
   const raw = await chat(env, INTERPRET_SYSTEM, user);
-  const parsed = extractJson<Interpretation>(raw);
+  const parsed = extractJson<RawInterpretation>(raw);
   return (
     parsed ?? {
       slotUpdates: {},

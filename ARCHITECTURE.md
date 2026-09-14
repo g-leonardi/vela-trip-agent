@@ -22,6 +22,75 @@
 - Come il log grezzo in /agent-log/ documenta il processo:
 - Decisioni prese dall'agente vs decisioni prese da Giuseppe:
 
+### Verifica qualità Workers AI, dal vivo (2026-09-14 ~14:00)
+
+Come richiesto dal brief ("verificarne per prima cosa la qualità su un caso
+reale prima di costruirci sopra tutto"), prima di considerare Workers AI
+definitivo ho fatto girare l'intero flusso conversazionale reale contro
+`wrangler dev` (AI binding in modalità `remote: true` — necessario, senza
+quel flag il binding va in errore locale silenzioso, vedi bug qui sotto) e
+osservato 3 problemi concreti, tutti risolti tenendo il modello lontano dal
+compito che gli riesce peggio (matematica/lookup esatti) e lasciandogli solo
+comprensione e fraseggio in linguaggio naturale:
+
+1. **Il modello non sa fare aritmetica di calendario in modo affidabile.**
+   Con istruzioni esplicite ("oggi è 2026-09-14, non usare mai 1970") il
+   modello (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) ha comunque
+   restituito `1970-09-25` e poi `1971-09-25` per "il 25 settembre" — due
+   tentativi diversi, stesso errore di categoria. **Decisione**: il modulo
+   di interpretazione (`engine/ai.ts`) non chiede più al modello una data
+   ISO calcolata — gli si chiede di *estrarre la frase letterale* ("il 25
+   settembre", "il prossimo weekend"...), e un resolver deterministico in
+   codice (`engine/dates.ts`, con test unitari) fa il calcolo vero. Lezione
+   generale applicata: matematica e lookup esatti restano in codice
+   testabile, il modello fa solo NLU/NLG — non è un compromesso, è la
+   scelta architetturale corretta a prescindere dal modello.
+2. **Il ranking di ricerca dell'API può proporre la città sbagliata.** Per
+   `keyword="Roma tennis"` su Terrarossa, il risultato più in alto per
+   `combinedScore` era un venue "tennis-roma-fdm" a **Forte dei Marmi**, non
+   Roma — il nome del campo conteneva "roma" ma la destinazione no.
+   L'API non distingue "prezzo/data leggermente diversi" (un compromesso
+   accettabile da proporre) da "città completamente diversa" (non lo è).
+   **Decisione**: `engine/matcher.ts` filtra i candidati per corrispondenza
+   città (con un piccolo dizionario di sinonimi IT/EN: roma/rome,
+   milano/milan, ecc.) PRIMA di passarli alla classificazione
+   exact/compromise/none, scartando chi non corrisponde invece di
+   riordinarlo soltanto — se lo scarto svuota la lista, si passa
+   correttamente a "nessuna corrispondenza, chiedo chiarimento" invece di
+   proporre la città sbagliata con sicurezza.
+3. **`POST /v1/itineraries` vuole `productId` come number, non string**,
+   nonostante lo schema OpenAPI dichiari `oneOf(integer, string)` — verificato
+   dal vivo: un productId stringa dà 400 `ZodError` dall'upstream del brand
+   site. Corretto lato client (`HofjClient.createItinerary` forza
+   `Number(productId)`), con commento che documenta il perché.
+
+**Verifica dal vivo della ri-verifica silenziosa** (proprio il meccanismo
+richiesto dal brief): nel primo test end-to-end, il prezzo mostrato in fase
+di ricerca (365€, solo l'attività tennis) differiva dal totale reale del
+carrello aperto (465€, include l'hotel) — il sistema l'ha rilevato da solo
+dopo `POST /v1/itineraries` + `GET` sullo snapshot, è tornato in stato
+"proposing" con la nuova cifra, e ha ottenuto una nuova conferma esplicita
+prima di proseguire — senza intervento manuale. Log completo del turno in
+`/agent-log/`.
+
+**Affidabilità del binding stesso**: Workers AI (anche non in errore di
+prompt) ha lanciato un `InferenceUpstreamError: internal error` transitorio
+un paio di volte durante i test, indipendentemente dal modello provato.
+Non è un problema di prompt: è retry-abile. `engine/ai.ts` ora ritenta la
+chiamata fino a 3 volte con backoff prima di arrendersi, e solo allora la
+conversazione riceve un "scusa, puoi ripetere?" — **senza** terminare la
+sessione (a differenza di un vero errore HOFJ in fase di prenotazione, quello
+sì terminale). Questa distinzione (hiccup del motore di linguaggio = non
+fatale, errore della pipeline di booking reale = fatale) è una decisione
+architetturale esplicita in `conversation.ts`.
+
+**Conclusione**: Workers AI (Llama 3.3 70B) è qualitativamente adeguato come
+motore primario per NLU/NLG in italiano — il fraseggio delle proposte
+("non riesco a 365€, il prezzo reale è 465€, procedo?") è risultato naturale
+e rispetta il vincolo "una proposta alla volta" senza bisogno di prompt
+engineering aggressivo. Il fallback Anthropic Haiku resta cablato in
+`engine/ai.ts` ma non è mai stato attivato: non è risultato necessario.
+
 **Metodologia a due tracce (decisa in fase di preparazione):**
 - Una sessione privata di pianificazione (mai pubblicata) dove Giuseppe e un
   Claude "consigliere" discutono strategia, dubbi, scarti di strada.

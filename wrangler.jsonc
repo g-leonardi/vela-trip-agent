@@ -13,7 +13,8 @@
     "binding": "ASSETS"
   },
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+    "remote": true
   },
   "durable_objects": {
     "bindings": [
@@ -26,6 +27,6 @@
   "vars": {
     "HOFJ_BASE_URL": "https://api.hofj.com",
     "HOFJ_BRAND": "terrarossa.com",
-    "HOFJ_LOCALE": "en"
+    "HOFJ_LOCALE": "it"
   }
 }

@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { HofjApiError, HofjClient } from "./hofj/client";
-import { interpret, say } from "./engine/ai";
+import { AiUnavailableError, interpret, say } from "./engine/ai";
+import { resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
 import {
   EMPTY_SLOTS,
@@ -88,12 +89,16 @@ export class ConversationDO extends DurableObject<Env> {
       return { reply, state };
     }
 
-    const interpretation = await interpret(this.env, state.slots, state.traveller, text);
-    state.slots = mergeDefined(state.slots, interpretation.slotUpdates);
-    state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
-
     let reply: string;
     try {
+      const interpretation = await interpret(this.env, state.slots, state.traveller, text);
+      const { dateFromText, dateToText, ...slotUpdates } = interpretation.slotUpdates as Record<string, unknown>;
+      const resolvedDates: Partial<Slots> = {};
+      if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
+      if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
+      state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
+      state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
+
       switch (state.stage) {
         case "collecting":
           reply = await this.runCollecting(state);
@@ -116,10 +121,17 @@ export class ConversationDO extends DurableObject<Env> {
     return { reply, state };
   }
 
+  /** AI-layer hiccups (transient Workers AI errors, exhausted) are not
+   * business failures — the conversation stays exactly where it was and we
+   * just ask the traveller to repeat themselves. Only real pipeline
+   * failures (HOFJ errors past this point) end the conversation. */
   private async handleUnexpectedError(state: ConversationState, err: unknown): Promise<string> {
+    if (err instanceof AiUnavailableError) {
+      return "Scusa, non ho capito bene — puoi ripetere?";
+    }
     state.stage = "failed";
     state.failureReason = err instanceof Error ? err.message : String(err);
-    return say(this.env, { kind: "payment_unavailable", retrying: false });
+    return "Mi dispiace, ho un problema tecnico interno e non posso continuare questa conversazione. Riprova più tardi aprendone una nuova.";
   }
 
   private firstMissingTripSlot(slots: Slots): (typeof REQUIRED_TRIP_SLOTS)[number] | null {
@@ -152,8 +164,10 @@ export class ConversationDO extends DurableObject<Env> {
   private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear"): Promise<string> {
     if (decision === "yes" && state.proposal) {
       state.stage = "collecting_traveller";
-      const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
-      return say(this.env, { kind: "ask_traveller_field", field: missing ?? "firstName" });
+      // Traveller info may already be filled from an earlier attempt (e.g.
+      // a price-changed re-confirmation loop) — don't re-ask what we
+      // already have, go straight to opening the cart if it's complete.
+      return this.runCollectingTraveller(state);
     }
     if (decision === "no" && state.proposal) {
       state.rejectedProductIds.push(state.proposal.candidate.productId);

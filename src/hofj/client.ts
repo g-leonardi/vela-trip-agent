@@ -154,8 +154,11 @@ export class HofjClient {
     adults: number;
     rooms: number;
   }): Promise<CreateItineraryResponse> {
+    // The OpenAPI spec documents productId as oneOf(integer, string), but
+    // the actual brand-site upstream (verified live) enforces a strict Zod
+    // number check and 400s on a numeric string. Always coerce.
     return this.request("POST", "/v1/itineraries", {
-      body: { ...input, currency: "EUR" },
+      body: { ...input, productId: Number(input.productId), currency: "EUR" },
     });
   }
 

@@ -79,6 +79,38 @@ function buildKeyword(slots: Slots): string {
   return [slots.city, slots.sport].filter(Boolean).join(" ");
 }
 
+// A handful of IT/EN city-name pairs, since the catalog is in one locale
+// (see HOFJ_LOCALE) but travellers say city names in their own language.
+const CITY_SYNONYMS: Record<string, string[]> = {
+  roma: ["rome"],
+  milano: ["milan"],
+  venezia: ["venice"],
+  firenze: ["florence"],
+  napoli: ["naples"],
+  torino: ["turin"],
+};
+
+function cityMatches(requested: string, product: SearchProduct): boolean {
+  const req = requested.trim().toLowerCase();
+  const synonyms = [req, ...(CITY_SYNONYMS[req] ?? [])];
+  const haystack = `${product.primaryDestination} ${product.title}`.toLowerCase();
+  return synonyms.some((s) => haystack.includes(s));
+}
+
+/** The API's own ranking is popularity/relevance-weighted and can surface a
+ * venue whose *slug* happens to contain the city name (verified live: a
+ * "tennis-roma-fdm" venue in Forte dei Marmi outranked actual Rome products
+ * for keyword "Roma tennis"). Unlike price/date, a wrong city isn't a
+ * "compromise" we should silently propose — it's not what was asked at
+ * all — so we drop non-matching candidates rather than just re-sort them;
+ * if that empties the list, classify() correctly falls through to a
+ * clarifying question instead of a plausible-looking wrong-city proposal. */
+function filterToMatchingCity(slots: Slots, candidates: SearchProduct[]): SearchProduct[] {
+  if (!slots.city) return candidates;
+  const matching = candidates.filter((c) => cityMatches(slots.city!, c));
+  return matching;
+}
+
 const FALLBACK_BRAND = "weebora.com";
 
 /** Resolves slots to a ranked candidate list. Terrarossa is the tennis/padel
@@ -91,12 +123,14 @@ export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<
   // dialogue should be able to offer, not silently drop. classify() does
   // the date comparison itself once we have the ranked candidates.
   const keyword = buildKeyword(slots);
-  const primary = await hofj.search({ keyword: keyword || undefined, topN: 5 });
-  if (primary.data.products.length > 0) return primary.data.products;
+  const primary = await hofj.search({ keyword: keyword || undefined, topN: 15 });
+  const primaryMatched = filterToMatchingCity(slots, primary.data.products);
+  if (primaryMatched.length > 0) return primaryMatched;
 
   if (slots.sport === "padel") {
-    const fallback = await hofj.search({ keyword: keyword || undefined, topN: 5, brand: FALLBACK_BRAND });
-    return fallback.data.products;
+    const fallback = await hofj.search({ keyword: keyword || undefined, topN: 15, brand: FALLBACK_BRAND });
+    const fallbackMatched = filterToMatchingCity(slots, fallback.data.products);
+    if (fallbackMatched.length > 0) return fallbackMatched;
   }
 
   return [];
