@@ -2,6 +2,7 @@ export interface Env {
   AI: Ai;
   ASSETS: Fetcher;
   CONVERSATION: DurableObjectNamespace<import("./conversation").ConversationDO>;
+  USER_PROFILE: DurableObjectNamespace<import("./userProfile").UserProfileDO>;
   HOFJ_BASE_URL: string;
   HOFJ_BRAND: string;
   HOFJ_LOCALE: string;
@@ -90,25 +91,62 @@ export const EMPTY_TRAVELLER: TravellerInfo = {
   countryCode: null,
 };
 
-/** Stand-in for a real per-user profile/login, which doesn't exist yet.
- * Giuseppe's call (2026-09-15): for this demo, every conversation starts
- * with a profile already on file — same idea as a real account with saved
- * contact/payment details, just a single fixed demo identity instead of
- * real auth. Deliberately synthetic data (never a real person's), since
- * this is public source code. A traveller can still override any field by
- * stating it explicitly — mergeDefined only overwrites with a real,
- * non-null value, so this is a default, not a lock. The real target
- * architecture (noted for later, not built this session): a per-user
- * profile keyed by login, which the agent also learns from over time. */
-export const DEMO_TRAVELLER: TravellerInfo = {
-  firstName: "Demo",
-  lastName: "Traveller",
-  email: "demo.traveller@example.com",
-  phone: "+39 000 0000000",
-  city: "Milano",
-  postalCode: "20100",
-  countryCode: "IT",
+/** A real, persistent per-user profile — replaces the earlier
+ * DEMO_TRAVELLER stand-in (2026-09-14 ~23:30, Giuseppe: "il mio obiettivo
+ * è semplicemente eliminare il DEMO_TRAVELLER a favore di qualcosa di
+ * duraturo"). Durable, but deliberately not real auth: kept in its own
+ * Durable Object (see userProfile.ts), addressed by a client-generated id
+ * persisted in the browser's localStorage — the same pattern already used
+ * for a conversation's own sessionId, just one level up. This does NOT
+ * solve "recognize the same person on a different device" (that's the
+ * real identity/login problem, still explicitly out of scope — see
+ * ARCHITECTURE.md), it only avoids re-asking the same questions every
+ * time in the same browser.
+ *
+ * `householdSize` and `economicTier` are DEFAULTS, never a silent
+ * decision: conversation.ts surfaces them as a suggestion the agent still
+ * asks the traveller to confirm for that specific trip ("di solito siete
+ * in tre, ancora così?") — the same precision policy that already governs
+ * `adults`/`budget` in Slots stays intact, a saved profile doesn't get to
+ * quietly override it. */
+export interface UserProfile {
+  firstName: string | null;
+  email: string | null;
+  /** Città di residenza, non la destinazione del viaggio. */
+  city: string | null;
+  preferredSport: "tennis" | "padel" | null;
+  /** Numero di persone del nucleo familiare — usato come ipotesi di
+   * default per `adults` in un nuovo viaggio, sempre da confermare. */
+  householdSize: number | null;
+  /** Profilo economico dichiarato dall'utente una volta, con nomi
+   * volutamente accattivanti invece dei semplici "low/mid/high" interni:
+   * "smart" (fino a 500€ a viaggio), "pro" (600-1500€), "luxury" (oltre
+   * 1500€). Mappato a `Slots.budgetTier` come default suggerito, non
+   * vincolante, per un nuovo viaggio. */
+  economicTier: "smart" | "pro" | "luxury" | null;
+}
+
+export const EMPTY_USER_PROFILE: UserProfile = {
+  firstName: null,
+  email: null,
+  city: null,
+  preferredSport: null,
+  householdSize: null,
+  economicTier: null,
 };
+
+export const REQUIRED_PROFILE_FIELDS: (keyof UserProfile)[] = [
+  "firstName",
+  "email",
+  "city",
+  "preferredSport",
+  "householdSize",
+  "economicTier",
+];
+
+export function isProfileComplete(profile: UserProfile): boolean {
+  return REQUIRED_PROFILE_FIELDS.every((f) => profile[f] !== null);
+}
 
 export type Stage =
   | "collecting" // slot-filling the trip intent
@@ -212,4 +250,20 @@ export interface ConversationState {
    * — party size is never silently skipped, that line stays hard. */
   cityAskAttempts: number;
   budgetAskAttempts: number;
+  /** Seeded once, from the traveller's saved UserProfile, the moment this
+   * conversation's very first message is handled (see conversation.ts) —
+   * never touched again after that, and never written straight into
+   * `slots.adults`/`slots.budgetTier` themselves. Only used to phrase the
+   * ask_slot question for those two fields as a confirmable suggestion
+   * ("di solito siete in 3, ancora così?") instead of a blind one — the
+   * precision policy that adults/budget are never silently decided stays
+   * intact even with a saved profile on file. Null when there was no
+   * profile yet, or the profile never gave that field. */
+  householdSizeHint: number | null;
+  economicTierHint: "smart" | "pro" | "luxury" | null;
+  /** Same idea as the two above, for the one slot that isn't under the
+   * hard adults/budget precision policy — still never silently applied,
+   * just makes the "che sport preferisci?" question a confirmable
+   * suggestion instead of a blind one. */
+  preferredSportHint: "tennis" | "padel" | null;
 }

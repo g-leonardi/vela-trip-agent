@@ -5,12 +5,13 @@ import { extractMonthHint, resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
 import { confirmPaymentIntent, createPaymentIntent } from "./stripe/client";
 import {
-  DEMO_TRAVELLER,
   EMPTY_SLOTS,
+  EMPTY_TRAVELLER,
   type ConversationState,
   type Env,
   type Slots,
   type TravellerInfo,
+  type UserProfile,
 } from "./types";
 
 const REQUIRED_TRIP_SLOTS: (keyof Pick<Slots, "sport" | "city" | "dateFrom" | "budget" | "adults">)[] = [
@@ -32,11 +33,12 @@ function initialState(): ConversationState {
     stage: "collecting",
     language: null,
     slots: { ...EMPTY_SLOTS },
-    // Stand-in for a real per-user profile (no login exists yet) — see
-    // the doc on DEMO_TRAVELLER in types.ts. Every field here can still
-    // be overridden by the traveller stating it explicitly at any point;
-    // this is a default, not a lock.
-    traveller: { ...DEMO_TRAVELLER },
+    // Starts empty — a real, persistent UserProfile (see types.ts,
+    // userProfile.ts) is merged in by handleMessage() on this
+    // conversation's very first turn, if one was passed in. Every field
+    // here can still be overridden by the traveller stating it explicitly
+    // at any point; a seeded profile is a default, never a lock.
+    traveller: { ...EMPTY_TRAVELLER },
     messages: [],
     proposal: null,
     rejectedProductIds: [],
@@ -49,6 +51,9 @@ function initialState(): ConversationState {
     failureReason: null,
     cityAskAttempts: 0,
     budgetAskAttempts: 0,
+    householdSizeHint: null,
+    economicTierHint: null,
+    preferredSportHint: null,
   };
 }
 
@@ -97,8 +102,26 @@ export class ConversationDO extends DurableObject<Env> {
    * DO instance, which naturally serializes concurrent messages for the
    * same conversation — that's also what stops a double /v1/bookings call
    * if the traveller (or a flaky client) sends "sì" twice in a row. */
-  async handleMessage(text: string): Promise<HandleMessageResult> {
+  async handleMessage(text: string, profile?: UserProfile | null): Promise<HandleMessageResult> {
     let state = await this.loadState();
+    // Seed from the traveller's real, persistent profile (see
+    // userProfile.ts) on this conversation's very first turn only — never
+    // touched again after that. firstName/email/city fill exactly the
+    // role DEMO_TRAVELLER's hardcoded values used to (skip re-asking what
+    // we already know), while household size / economic tier are kept
+    // ONLY as hints (see householdSizeHint/economicTierHint's doc,
+    // types.ts) — a saved profile still never silently decides
+    // adults/budget for a specific trip.
+    if (state.messages.length === 0 && profile) {
+      state.traveller = mergeDefined(state.traveller, {
+        firstName: profile.firstName,
+        email: profile.email,
+        city: profile.city,
+      });
+      state.householdSizeHint = profile.householdSize;
+      state.economicTierHint = profile.economicTier;
+      state.preferredSportHint = profile.preferredSport;
+    }
     state.messages.push({ role: "traveller", text, at: Date.now() });
 
     if (state.stage === "booked") {
@@ -262,7 +285,17 @@ export class ConversationDO extends DurableObject<Env> {
         adults: "in quante persone viaggia",
       };
       for (const key of REQUIRED_TRIP_SLOTS) {
-        if (!this.isGatingSatisfied(state, key)) return labels[key] ?? key;
+        if (!this.stillBeingAsked(state, key)) continue;
+        const label = labels[key] ?? key;
+        // Regression found live 2026-09-14: the question itself said "come
+        // al solito padel, giusto?" (a profile hint), but a bare "sì" back
+        // didn't resolve to anything — interpret() was never told what
+        // "come al solito" actually referred to, only the generic label.
+        // Folding the hint's real value into the context here (not just
+        // into the question's phrasing) is what lets a short confirmation
+        // actually land in the slot.
+        const hint = this.hintFor(state, key);
+        return hint ? `${label} (gli è stato appena suggerito "${hint}" come ipotesi dal suo profilo — se risponde con un sì/conferma/ok secco senza specificare altro, intende confermare esattamente quel valore)` : label;
       }
       return null;
     }
@@ -281,6 +314,36 @@ export class ConversationDO extends DurableObject<Env> {
       return missing ? (labels[missing] ?? missing) : null;
     }
     return null;
+  }
+
+  /** Whether `key` is still the slot a reply arriving RIGHT NOW should be
+   * read as answering — distinct from isGatingSatisfied() below, and
+   * deliberately not the same check. `cityAskAttempts`/`budgetAskAttempts`
+   * are incremented the moment a question is ASKED, not once a reply to
+   * it has come back unresolved — so by the time the traveller's reply to
+   * that very question arrives on the *next* turn, isGatingSatisfied()
+   * already reports the slot as bypassed (attempts already at the
+   * threshold), and describeCurrentlyAsking() would silently describe the
+   * WRONG (next) slot as "currently being asked" instead. Invisible with
+   * plain-value answers ("500 euro" is unambiguous regardless of context)
+   * but a real, reproducible bug the moment the question is a profile
+   * hint confirmed with a bare "sì" — verified live 2026-09-14: a
+   * confirmation meant for the budget hint landed in `adults` instead,
+   * because attempts had already ticked past the loop-breaker threshold
+   * one reply too early. Fix: this check stays true through the reply to
+   * the LAST ask (attempts <= the loop-breaker), one turn longer than
+   * isGatingSatisfied() does, so that specific reply still gets
+   * attributed to the right slot; isGatingSatisfied() is untouched and
+   * still decides, correctly, whether runCollecting() should move on. */
+  private stillBeingAsked(state: ConversationState, key: (typeof REQUIRED_TRIP_SLOTS)[number]): boolean {
+    switch (key) {
+      case "city":
+        return state.slots.city === null && state.cityAskAttempts <= CITY_LOOP_BREAKER;
+      case "budget":
+        return state.slots.budget === null && state.slots.budgetTier === null && state.budgetAskAttempts <= BUDGET_LOOP_BREAKER;
+      default:
+        return !this.isGatingSatisfied(state, key);
+    }
   }
 
   /** Is this required slot resolved enough to stop gating the search?
@@ -305,6 +368,38 @@ export class ConversationDO extends DurableObject<Env> {
     }
   }
 
+  /** A profile-derived suggestion for the slot about to be asked, if any —
+   * folded into the question as something to confirm, never applied
+   * silently (see the *Hint fields' doc, types.ts). Returns undefined
+   * when there's no relevant hint, or the slot isn't one of the three the
+   * profile can suggest anything for. */
+  private hintFor(state: ConversationState, key: (typeof REQUIRED_TRIP_SLOTS)[number]): string | undefined {
+    switch (key) {
+      case "adults":
+        return state.householdSizeHint === null
+          ? undefined
+          : state.householdSizeHint === 1
+            ? "da solo"
+            : `in ${state.householdSizeHint}`;
+      case "budget": {
+        // The profile's economicTier (smart/pro/luxury) and Slots.budgetTier
+        // (low/mid/high) are two different vocabularies for the same
+        // three-way idea — phrased here using the exact idioms
+        // interpret()'s own budgetTier rules already recognize (see
+        // INTERPRET_SYSTEM, engine/ai.ts), so a bare "sì" confirming this
+        // hint lands in budgetTier via the SAME extraction path as if the
+        // traveller had said it themselves, not a parallel one that would
+        // need its own mapping logic downstream.
+        const labels = { smart: "economico", pro: "carino ma non troppo caro, una via di mezzo", luxury: "il top, senza badare troppo a spese" } as const;
+        return state.economicTierHint === null ? undefined : labels[state.economicTierHint];
+      }
+      case "sport":
+        return state.preferredSportHint ?? undefined;
+      default:
+        return undefined;
+    }
+  }
+
   private async runCollecting(state: ConversationState): Promise<string> {
     // Walk the required slots in order and ask about the first one that
     // isn't gating-satisfied yet. Critically, a bypass on one slot (e.g. a
@@ -320,7 +415,7 @@ export class ConversationDO extends DurableObject<Env> {
       if (this.isGatingSatisfied(state, key)) continue;
       if (key === "city") state.cityAskAttempts += 1;
       if (key === "budget") state.budgetAskAttempts += 1;
-      return this.say(state, { kind: "ask_slot", missing: key });
+      return this.say(state, { kind: "ask_slot", missing: key, hint: this.hintFor(state, key) });
     }
     return this.searchAndPropose(state);
   }

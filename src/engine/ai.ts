@@ -144,7 +144,16 @@ export async function interpret(
 }
 
 export type SayDirective =
-  | { kind: "ask_slot"; missing: "sport" | "city" | "dateFrom" | "budget" | "adults" }
+  | {
+      kind: "ask_slot";
+      missing: "sport" | "city" | "dateFrom" | "budget" | "adults";
+      /** A profile-derived default for THIS specific slot (household size
+       * for "adults", the economic tier's own label for "budget") — never
+       * silently applied, only folded into the question as something to
+       * confirm or correct ("di solito siete in 3, ancora così?"). See
+       * ConversationState.householdSizeHint/economicTierHint, types.ts. */
+      hint?: string;
+    }
   | { kind: "propose"; ctx: ProposalContext; precededBy?: "rejected" | "unavailable" }
   | { kind: "ask_traveller_field"; field: keyof TravellerInfo; isFirstAsk: boolean }
   | { kind: "reverifying" }
@@ -176,6 +185,9 @@ function directiveToInstruction(d: SayDirective): string {
         budget: "qual è il budget indicativo",
         adults: "in quante persone viaggia",
       };
+      if (d.hint) {
+        return `Chiedi al viaggiatore, in una frase breve, ${labels[d.missing]} — ma sai già, dal suo profilo, che di solito è "${d.hint}": proponilo come ipotesi da confermare o correggere per QUESTO viaggio specifico (es. "come al solito ${d.hint}, giusto?"), non darlo per scontato senza chiedere.`;
+      }
       return `Chiedi al viaggiatore, in una frase breve, ${labels[d.missing]}. Non chiedere altro insieme.`;
     }
     case "propose": {
@@ -260,4 +272,77 @@ function directiveToInstruction(d: SayDirective): string {
 export async function say(env: Env, directive: SayDirective, language: string | null = null): Promise<string> {
   const instruction = directiveToInstruction(directive);
   return chat(env, buildSaySystem(language), instruction);
+}
+
+// --- Profile onboarding (2026-09-14): a separate, smaller NLU/NLG pair for
+// the one-time "who are you" setup (see userProfile.ts), reusing the same
+// chat()/Workers-AI-then-Haiku plumbing above instead of duplicating it.
+// Deliberately its own thing, not folded into interpret()/say(): the trip
+// engine's schema and rules (dates, budgetTier, adults precision policy)
+// don't apply here at all, and keeping them apart means neither prompt
+// has to carry the other's irrelevant rules.
+
+export interface ProfileExtraction {
+  firstName?: string | null;
+  email?: string | null;
+  city?: string | null;
+  preferredSport?: "tennis" | "padel" | null;
+  householdSize?: number | null;
+  economicTier?: "smart" | "pro" | "luxury" | null;
+}
+
+const PROFILE_INTERPRET_SYSTEM = `Sei il modulo di comprensione della configurazione iniziale di un agente di prenotazione viaggi sportivi (padel/tennis + hotel). Stai raccogliendo il profilo permanente del viaggiatore (non un viaggio specifico), una volta sola.
+Estrai SOLO ciò che il messaggio dice esplicitamente o implica chiaramente, senza inventare. Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo:
+{ "firstName": string|null, "email": string|null, "city": string|null, "preferredSport": "tennis"|"padel"|null, "householdSize": number|null, "economicTier": "smart"|"pro"|"luxury"|null }
+Regole:
+- Includi SOLO i campi che il messaggio cambia davvero; i non menzionati restano null.
+- "city" qui è la città di RESIDENZA del viaggiatore, non una destinazione di viaggio.
+- "householdSize": numero di persone del nucleo familiare — conta se il viaggiatore lo nomina o lo implica chiaramente ("siamo in 4", "io e mia moglie" = 2, "vivo da solo" = 1). Se dice qualcosa di non numerabile, lascia null.
+- "economicTier": il viaggiatore può rispondere col nome del profilo ("smart"/"pro"/"luxury", anche in italiano tipo "il base"/"il medio"/"il lusso") o con un'indicazione qualitativa/numerica che ci fai corrispondere tu: fino a 500€ a viaggio → "smart"; 600-1500€ o "via di mezzo"/"niente di esagerato" → "pro"; oltre 1500€ o "il top"/"senza badare a spese" → "luxury". Se non è chiaro, lascia null, non indovinare.
+- Se il messaggio non tocca affatto un campo, non includerlo o mettilo a null.`;
+
+export async function interpretProfile(
+  env: Env,
+  latestUserText: string,
+  currentlyAsking: string | null,
+): Promise<ProfileExtraction> {
+  const askContext = currentlyAsking ? `\nStai chiedendo in questo momento: ${currentlyAsking}` : "";
+  const user = `Messaggio del viaggiatore: "${latestUserText}"${askContext}`;
+  const raw = await chat(env, PROFILE_INTERPRET_SYSTEM, user);
+  return extractJson<ProfileExtraction>(raw) ?? {};
+}
+
+export type ProfileSayDirective =
+  | { kind: "ask_profile_field"; field: "firstName" | "email" | "city" | "preferredSport" | "householdSize" | "economicTier"; isFirstAsk: boolean }
+  | { kind: "profile_complete"; firstName: string };
+
+function profileDirectiveToInstruction(d: ProfileSayDirective): string {
+  switch (d.kind) {
+    case "ask_profile_field": {
+      const fieldQuestion: Record<
+        "firstName" | "email" | "city" | "preferredSport" | "householdSize" | "economicTier",
+        string
+      > = {
+        firstName: "chiedi il suo nome",
+        email: "chiedi la sua email, senza ripetere spiegazioni già date",
+        city: "chiedi in che città vive",
+        preferredSport: "chiedi se preferisce il padel o il tennis",
+        householdSize:
+          "chiedi in quante persone è di solito il suo nucleo familiare o con chi viaggia più spesso — servirà solo come ipotesi di partenza per i prossimi viaggi, non un vincolo",
+        economicTier:
+          "chiedi qual è il suo profilo di spesa preferito per i viaggi, spiegando in una frase naturale (non un elenco puntato) le tre opzioni: Smart (fino a 500€ a viaggio), Pro (tra 600€ e 1500€), Luxury (oltre 1500€)",
+      };
+      const greeting = d.isFirstAsk
+        ? "Questa è la primissima battuta di una configurazione iniziale, una tantum: dai un saluto breve e caloroso, spiega in una frase che vuoi conoscerlo un attimo così poi non dovrai richiedergli le stesse cose ad ogni viaggio, poi "
+        : "";
+      return `${greeting}${fieldQuestion[d.field]}, in una frase breve e naturale. Non chiedere altro insieme.`;
+    }
+    case "profile_complete":
+      return `Il profilo è completo. Ringrazia ${d.firstName} con calore in una frase breve, di' che da ora in poi non gli richiederai più queste cose, e che può iniziare a chiederti un viaggio quando vuole.`;
+  }
+}
+
+export async function sayProfile(env: Env, directive: ProfileSayDirective): Promise<string> {
+  const instruction = profileDirectiveToInstruction(directive);
+  return chat(env, buildSaySystem(null), instruction);
 }

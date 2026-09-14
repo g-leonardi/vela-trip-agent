@@ -86,16 +86,18 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     turno dopo la conferma, non "confermato" nello stesso messaggio in
     cui viene proposto — uno scarto reale rispetto alla customer journey
     target discussa con Giuseppe, tenuto consapevolmente.
-  - **Profilazione utente reale, persistente tra conversazioni diverse**:
-    non implementata in questa sessione. Richiederebbe risolvere anche
-    "come riconosco lo stesso utente alla prossima conversazione" — un
-    problema di design a sé (identità/autenticazione, non solo
-    storage), fuori scope per il tempo disponibile. `DEMO_TRAVELLER`
-    (vedi sezione 4, `src/types.ts`) resta esplicitamente un profilo
-    sintetico da demo/test — dati mai reali, dichiarati come tali nel
-    codice essendo un repository pubblico — pensato come base
-    concettuale per una futura login/profilazione reale per utente, non
-    come sostituto di quel lavoro.
+  - ~~**Profilazione utente reale, persistente tra conversazioni
+    diverse**: non implementata in questa sessione.~~ **AGGIORNATO
+    2026-09-14 ~23:35**: implementata, ma nella forma volutamente
+    ristretta che questa nota già anticipava — non vera identità
+    cross-dispositivo (quel problema, autenticazione/riconoscimento
+    dello stesso utente su un altro device, resta esplicitamente fuori
+    scope, invariato), solo persistenza locale al browser via
+    `UserProfileDO` (vedi sezione 4). `DEMO_TRAVELLER` non esiste più —
+    sostituito da un profilo reale raccolto una volta con un onboarding
+    conversazionale. La nota originale resta qui, corretta non
+    cancellata, perché la decisione È cambiata a metà sessione, su
+    richiesta esplicita di Giuseppe.
 
 ## 2. Architettura di scalabilità (25%)
 
@@ -281,6 +283,63 @@ prototipo di qualcosa che vivrà altrove — un dispositivo indossabile nel
   messaggio è scelto in base allo stage precedente noto lato client, così
   un "sì" dopo una proposta (che scatena la pipeline pesante reale) ha una
   frase specifica, non generica.
+
+### `DEMO_TRAVELLER` sostituito da un profilo reale e persistente (2026-09-14 ~23:35)
+
+Giuseppe: "il mio obiettivo è semplicemente eliminare il DEMO_TRAVELLER a
+favore di qualcosa di duraturo... va bene farlo vivere solo dentro
+Durable Objects per ora". Non vera identità cross-dispositivo (quella
+resta esplicitamente fuori scope, vedi sezione 1) — solo smettere di
+richiedere le stesse informazioni ad ogni conversazione nello stesso
+browser.
+
+- **`UserProfileDO`** (nuovo, `src/userProfile.ts`): un Durable Object per
+  *persona*, non per conversazione — a differenza di `ConversationDO`
+  (una per viaggio), questo vive per tutta la vita del browser
+  dell'utente, indirizzato da un `userId` generato una volta lato client
+  e salvato in `localStorage` (stesso pattern già usato per `sessionId`,
+  un livello più in alto). Contiene: nome, email, città di residenza,
+  sport preferito, numero di componenti del nucleo familiare, e un
+  "profilo economico" con nomi volutamente accattivanti — **Smart** (fino
+  a 500€ a viaggio), **Pro** (600-1500€), **Luxury** (oltre 1500€) —
+  invece dei semplici "low/mid/high" interni.
+- **Onboarding conversazionale, non un modulo**: stesso principio "parlagli
+  come parleresti a un umano" applicato alla configurazione iniziale,
+  riusando lo stesso pattern già esistente per `collecting_traveller`
+  (un campo alla volta, in linguaggio naturale) — non un form HTML con
+  caselle da riempire, l'unica eccezione sarebbe stata proprio quella.
+  Un NLU/NLG dedicato e più piccolo (`interpretProfile`/`sayProfile` in
+  `engine/ai.ts`), separato da quello del viaggio perché lo schema e le
+  regole non si sovrappongono (non c'è logica di date/budgetTier qui).
+- **I default del profilo non decidono mai nulla in silenzio**: la
+  policy "adults e budget non si assumono mai" (sezione 4, più sotto)
+  resta intatta — nucleo familiare e profilo economico diventano
+  `householdSizeHint`/`economicTierHint` su `ConversationState`, usati
+  SOLO per fraseggiare la domanda come un'ipotesi da confermare ("come al
+  solito in 3 per questo viaggio, giusto?") invece di ometterla. Lo stesso
+  per lo sport preferito (`preferredSportHint`), che non ha una policy
+  altrettanto rigida ma segue lo stesso principio per coerenza.
+- **Bug reale trovato costruendo questa funzionalità, non ipotizzato**:
+  verificato dal vivo che un "Sì" secco in risposta alla domanda sul
+  budget (con hint) veniva attribuito al campo SBAGLIATO (`adults`
+  invece di `budget`). Causa: `budgetAskAttempts`/`cityAskAttempts`
+  si incrementano nel momento stesso in cui la domanda viene fatta, non
+  dopo aver ricevuto (e non risolto) una risposta — quindi al turno
+  *successivo*, quando arriva la risposta a quell'unica domanda,
+  `isGatingSatisfied()` la considera già bypassata, e
+  `describeCurrentlyAsking()` etichetta il contesto con lo slot
+  SUCCESSIVO invece di quello a cui si sta davvero rispondendo. Invisibile
+  con risposte esplicite ("500 euro" si classifica da solo, senza bisogno
+  di contesto) — visibile solo ora che una conferma secca dipende
+  interamente dal contesto per essere risolta. **Corretto** con un nuovo
+  metodo `stillBeingAsked()`, distinto da `isGatingSatisfied()`: resta
+  vero un turno più a lungo (fino a `attempts <= LOOP_BREAKER` invece di
+  `< LOOP_BREAKER`), così la risposta all'ultima domanda effettivamente
+  fatta viene ancora attribuita correttamente, mentre `isGatingSatisfied()`
+  (usato da `runCollecting()` per decidere se procedere) resta invariato.
+  Verificato dal vivo dopo il fix: "Sì" in risposta al budget → `budgetTier:
+  "mid"` (non più `adults`), poi "Sì" in risposta agli adults → `adults: 3`
+  correttamente, proposta finale raggiunta con tutti gli slot giusti.
 
 ## 4. Metodo agentico (15%)
 

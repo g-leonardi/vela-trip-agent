@@ -252,12 +252,24 @@ mascherati da errori che sembravano problemi di terzi.
   prodotti non prenotabili durante quella che dovrebbe restare una
   proposta leggera. Documentato nella sezione scope-cut di
   `ARCHITECTURE.md` (sezione 1).
-- **Profilazione utente reale, persistente tra conversazioni** (punto 3):
-  **deciso di NON implementarla** in questa sessione. Richiederebbe anche
-  risolvere "come riconosco lo stesso utente la prossima volta" — un
-  problema di design a sé (identità/autenticazione). `DEMO_TRAVELLER`
-  resta esplicitamente un profilo demo/test. Documentato nella sezione
-  scope-cut di `ARCHITECTURE.md` (sezione 1).
+- ~~**Profilazione utente reale, persistente tra conversazioni** (punto
+  3): deciso di NON implementarla in questa sessione.~~ **RIVISTA
+  2026-09-14 ~23:35**: Giuseppe ha chiesto esplicitamente di eliminare
+  `DEMO_TRAVELLER` a favore di "qualcosa di duraturo", accettando che
+  resti "solo dentro Durable Objects per ora" — non vera identità
+  cross-dispositivo (quello resta fuori scope), solo persistenza locale
+  al browser. **Implementato**: `UserProfileDO` (nuovo Durable Object,
+  uno per persona non per conversazione, indirizzato da un `userId` in
+  localStorage), onboarding conversazionale one-time (nome, email, città,
+  sport preferito, nucleo familiare, profilo economico Smart/Pro/Luxury),
+  e un meccanismo di "hint suggerito ma sempre confermato" per
+  adults/budget/sport che non rompe la policy che quei due campi non si
+  decidono mai in silenzio. Bug reale trovato e corretto nel farlo (vedi
+  `ARCHITECTURE.md`): una conferma secca a una domanda con hint veniva
+  attribuita allo slot sbagliato per un problema di timing nel contatore
+  dei tentativi — invisibile prima d'ora perché le risposte esplicite si
+  classificano da sole, senza bisogno di quel contesto. Verificato dal
+  vivo end-to-end dopo il fix.
 
 ## Deliverable ancora aperti
 

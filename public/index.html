@@ -145,6 +145,23 @@
   let sessionId = null;
   try { sessionId = localStorage.getItem(SESSION_KEY); } catch (e) {}
 
+  // Persistent per-browser identity for the traveller's saved profile —
+  // deliberately separate from sessionId (one per trip conversation; this
+  // one is reused across every trip started in this same browser). Not
+  // real cross-device identity, just enough to stop re-asking the same
+  // onboarding questions every time — see UserProfile's doc, types.ts.
+  const USER_ID_KEY = "rally.userId.v1";
+  let userId = null;
+  try { userId = localStorage.getItem(USER_ID_KEY); } catch (e) {}
+  if (!userId) {
+    userId = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    try { localStorage.setItem(USER_ID_KEY, userId); } catch (e) {}
+  }
+  // Unknown until the init flow below checks — true is the safe default
+  // (never skip a real onboarding question because of a network hiccup
+  // while checking).
+  let onboarding = true;
+
   const mic = document.getElementById("mic");
   const status = document.getElementById("status");
   const lastReply = document.getElementById("lastReply");
@@ -245,14 +262,39 @@
     }, 7500));
 
     try {
-      const res = await fetch("/api/message", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, text }),
-      });
+      // Two different DOs, two different endpoints, same UI: the
+      // one-time profile setup (see UserProfileDO) and an actual trip
+      // conversation (ConversationDO) — but the traveller experiences
+      // both as "just talking to Rally", same mic, same voice loop.
+      const res = onboarding
+        ? await fetch("/api/onboarding/message", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ userId, text }),
+          })
+        : await fetch("/api/message", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ sessionId, userId, text }),
+          });
       const data = await res.json();
       clearFillers();
       mic.classList.remove("thinking");
+
+      if (onboarding) {
+        addMessage("agent", data.reply || "");
+        lastReply.textContent = data.reply || "";
+        speak(data.reply || "", null);
+        if (data.complete) {
+          onboarding = false;
+          status.textContent = "Fatto — ora puoi chiedermi un viaggio quando vuoi.";
+          revealExamplesIfFirstTrip();
+        } else {
+          status.textContent = voiceModeActive ? "…" : "Tocca il microfono per rispondere";
+        }
+        return;
+      }
+
       if (data.sessionId) {
         sessionId = data.sessionId;
         try { localStorage.setItem(SESSION_KEY, sessionId); } catch (e) {}
@@ -285,17 +327,55 @@
   // an ordinary message — the same path as typing or speaking it — and
   // the chips disappear right after, same as any other first-turn UI
   // (they'd be clutter, and slightly misleading, once a real conversation
-  // is under way). If a conversation is already resumed from localStorage
-  // (sessionId present), skip showing them at all — it's not a first turn.
-  if (examples) {
+  // is under way). Skipped entirely once a trip conversation is already
+  // resumed from localStorage (sessionId present) — not a first turn.
+  function revealExamplesIfFirstTrip() {
+    if (!examples) return;
     if (sessionId) {
       examples.hidden = true;
-    } else {
-      examples.querySelectorAll(".example-chip").forEach((chip) => {
-        chip.addEventListener("click", () => send(chip.textContent));
-      });
+      return;
     }
+    examples.hidden = false;
+    examples.querySelectorAll(".example-chip").forEach((chip) => {
+      chip.addEventListener("click", () => send(chip.textContent));
+    });
   }
+
+  // One-time profile setup, only for a browser that's never completed it:
+  // ask the very first question before the traveller has said anything at
+  // all, so there's something to hear/read the moment the page loads.
+  (async function init() {
+    try {
+      const res = await fetch(`/api/profile?userId=${encodeURIComponent(userId)}`);
+      const data = await res.json();
+      onboarding = !data.complete;
+    } catch (e) {
+      onboarding = false; // fail open — a broken check shouldn't trap anyone in a setup screen
+    }
+
+    if (!onboarding) {
+      status.textContent = "Tocca per parlare";
+      revealExamplesIfFirstTrip();
+      return;
+    }
+
+    if (examples) examples.hidden = true;
+    status.textContent = "Un secondo…";
+    try {
+      const res = await fetch("/api/onboarding/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      const data = await res.json();
+      addMessage("agent", data.reply || "");
+      lastReply.textContent = data.reply || "";
+      speak(data.reply || "", null);
+      status.textContent = "Tocca il microfono per rispondere";
+    } catch (e) {
+      status.textContent = "Errore di rete, riprova.";
+    }
+  })();
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognizing = false;
