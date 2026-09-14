@@ -60,6 +60,15 @@
   .msg.traveller { align-self: flex-end; background: #1f2e29; }
   .msg.agent { align-self: flex-start; background: var(--panel); }
   .hint { font-size: 0.78rem; color: var(--muted); margin-top: -18px; margin-bottom: 24px; }
+  #examples { margin: -8px 0 24px; }
+  #examples p { font-size: 0.78rem; color: var(--muted); margin: 0 0 8px; }
+  #examples .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .example-chip {
+    font-size: 0.82rem; text-align: left; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid #2a3733; background: transparent; color: var(--muted);
+    cursor: pointer; max-width: 100%;
+  }
+  .example-chip:hover { border-color: var(--accent); color: var(--text); }
 </style>
 </head>
 <body>
@@ -79,6 +88,15 @@
   </form>
   <p class="hint">Il testo è un ripiego per chi non può usare la voce — l'interazione pensata è vocale, a schermo spento.</p>
 
+  <div id="examples">
+    <p>Non sai da dove partire? Sono solo esempi, non l'unico modo di parlare:</p>
+    <div class="chips">
+      <button type="button" class="example-chip">Voglio giocare a tennis a Roma il 25 settembre, budget 500 euro, siamo in 2</button>
+      <button type="button" class="example-chip">Non ho preferenze di città, portami dove trovi la disponibilità migliore per il padel</button>
+      <button type="button" class="example-chip">I have three days off in June, I want to play padel somewhere warm, nothing too expensive</button>
+    </div>
+  </div>
+
   <details>
     <summary>Trascrizione (per revisione)</summary>
     <div id="transcript" class="transcript"></div>
@@ -97,6 +115,7 @@
   const transcript = document.getElementById("transcript");
   const form = document.getElementById("textForm");
   const input = document.getElementById("textInput");
+  const examples = document.getElementById("examples");
 
   function addMessage(role, text) {
     const el = document.createElement("div");
@@ -136,6 +155,7 @@
 
   async function send(text) {
     if (!text || !text.trim()) return;
+    if (examples) examples.hidden = true;
     addMessage("traveller", text);
     status.textContent = "…";
     try {
@@ -169,6 +189,22 @@
     input.value = "";
     send(text);
   });
+
+  // Inspiration, never a menu: tapping one just sends that exact phrase as
+  // an ordinary message — the same path as typing or speaking it — and
+  // the chips disappear right after, same as any other first-turn UI
+  // (they'd be clutter, and slightly misleading, once a real conversation
+  // is under way). If a conversation is already resumed from localStorage
+  // (sessionId present), skip showing them at all — it's not a first turn.
+  if (examples) {
+    if (sessionId) {
+      examples.hidden = true;
+    } else {
+      examples.querySelectorAll(".example-chip").forEach((chip) => {
+        chip.addEventListener("click", () => send(chip.textContent));
+      });
+    }
+  }
 
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let recognizing = false;

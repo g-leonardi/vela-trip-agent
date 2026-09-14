@@ -1021,6 +1021,68 @@ di booking, senza ricreare né ri-addebitare il pagamento Stripe già andato
 a buon fine, verificato dal vivo controllando che non comparisse un
 secondo PaymentIntent dopo un retry) regge comunque la situazione.
 
+### Entrambi i bug storici del booking risolti da Vela — primo `stage: "booked"` reale (2026-09-14 ~21:45)
+
+Giuseppe ha segnalato di aver sentito che l'API era stata sistemata e ha
+chiesto di riprovare un booking reale. Verificato dal vivo: **entrambi** i
+bloccanti storici sopra sono davvero spariti — `GET .../payment` restituisce
+ora un `client_secret` Stripe vero (prima sempre 502), e `POST
+/v1/bookings` accetta `paymentType` qualunque sia il valore (prima sempre
+respinto). Progresso reale, confermato empiricamente, non solo riferito.
+
+Non tutto però è risolto per davvero, ed è importante dirlo con
+precisione:
+
+1. **Il `client_secret` nativo appartiene a un account Stripe che la
+   nostra chiave non può leggere** — verificato: sia `GET` che `confirm`
+   su quel PaymentIntent danno `resource_missing` 404. Quasi certamente
+   corretto per design (in produzione sarebbe il browser del viaggiatore
+   a confermarlo con la chiave pubblicabile del brand, mai noi lato
+   server), ma significa che il flusso nativo resta comunque non
+   completabile da questo prototipo, che non ha un frontend Stripe.js
+   reale. **Bug nostro scoperto di riflesso**: `attemptPayment()` prima
+   di questo fix, alla prima chiamata *riuscita* a `getPaymentIntent`,
+   metteva la conversazione in `stage: "paying"` e diceva "riprovo
+   subito" — un vero e proprio vicolo cieco, dato che nessun frontend
+   avrebbe mai richiamato `confirmPaymentAndBook()` per uscirne. Prima
+   d'oggi questo ramo non si era mai attivato (l'endpoint 502ava sempre),
+   quindi il dead-end esisteva silenziosamente nel codice senza mai
+   essersi manifestato. **Corretto**: il flusso nativo viene comunque
+   tentato per davvero ad ogni chiamata (resta spec-corretto, utile per
+   log), ma non è più uno stato terminale — si passa sempre al bypass
+   diretto Stripe già verificato funzionante, qualunque cosa risponda
+   `getPaymentIntent`.
+2. **Nello spec completo** (`GET /v1/openapi.json`, letto in questo
+   dettaglio solo ora) sono emersi due campi opzionali di
+   `POST /v1/bookings` mai usati: `paymentIntentId` e `paymentStatus`,
+   "forwarded to the brand site when present". Senza di loro il campo
+   `data` della risposta 200 si limitava a ripetere l'itineraryId invece
+   di un vero codice prenotazione. **Corretto**: forwardati sempre
+   (persistiti in `state.paymentIntentId`/`paymentStatus` così un
+   "riprova" successivo li re-invia senza ripagare).
+3. **Con questi due campi, un giro reale dell'app ha raggiunto
+   `stage: "booked"` per la prima volta**: pagamento Stripe vero
+   (`pi_3UFfmKRpam3eRRKb1tCnbEW0`, 730€, `succeeded`), risposta 200 con un
+   `data` finalmente DIVERSO dall'itineraryId (`qu5i422yzsla`, non più un
+   semplice eco). **Segnale forte, non prova assoluta**: `checkout.status`
+   sull'itinerario restava comunque `"BookingInitiated"` anche dopo, e
+   l'unico endpoint che espone lo stato reale della prenotazione (`GET
+   /v1/bookings/{id}`, enum `BookingStatus`:
+   `pending`/`payment_failed`/`confirmed`/`cancelled`) richiede un token
+   end-user (`X-End-User-Authorization`) che una chiave B2B da
+   sviluppatore non ha — 401, verificato, per design presumibilmente
+   (quell'endpoint serve al sito del brand per mostrare "i miei ordini" a
+   un cliente loggato, non a un'integrazione B2B). **Non possiamo quindi
+   confermare al 100% da qui che sia un vero booking finalizzato**, solo
+   che ogni segnale osservabile con le nostre credenziali (200 reale,
+   `data` non più un eco, pagamento Stripe reale riuscito) punta in quella
+   direzione. Domanda aperta, riportata a Giuseppe per il relay a Carlo:
+   `checkout.status` fermo su "BookingInitiated" dopo un 200 genuino è
+   normale (due sistemi/lifecycle separati, cart vs order) o un segno che
+   manca ancora un pezzo? Non fabbrichiamo una certezza che non abbiamo —
+   questo è esattamente il tipo di dichiarazione onesta che il brief
+   chiede, non un "ce l'abbiamo fatta" senza riserve.
+
 ## 6. Comunicazione (5%)
 - Questo documento (aggiornato durante il lavoro, non a posteriori — vedi
   i timestamp dei commit), `/agent-log/` per la trascrizione grezza della

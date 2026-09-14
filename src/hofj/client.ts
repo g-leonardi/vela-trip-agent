@@ -209,24 +209,48 @@ export class HofjClient {
     return this.request("PUT", `/v1/itineraries/${itineraryId}/pax`, { body: pax, brand });
   }
 
-  /** Refresh the Stripe PaymentIntent and return its client_secret.
-   * Known-broken upstream as of 2026-09-14 (502, upstream 405) — see
-   * ARCHITECTURE.md. Kept spec-correct so it starts working the moment the
-   * upstream bug is fixed, since HOFJ's inventory/backend is shared and can
-   * change during the session. */
+  /** Refresh the Stripe PaymentIntent and return its client_secret. Was
+   * broken all day (502, upstream 405) — verified FIXED live 2026-09-14
+   * ~21:35 (real client_secret returned). Still can't be driven to
+   * completion from here, though: the PaymentIntent it returns belongs to
+   * a Stripe account our own key can't read (verified live: both GET and
+   * confirm 404 "resource_missing") — by design, most likely, since the
+   * real flow expects the traveller's own browser to confirm it
+   * client-side with the brand's own publishable key. See conversation.ts
+   * (attemptPayment) and ARCHITECTURE.md for the full trail. */
   getPaymentIntent(itineraryId: string, brand: string): Promise<{ data: string }> {
     return this.request("GET", `/v1/itineraries/${itineraryId}/payment`, { brand });
   }
 
-  /** Confirm the booking after Stripe payment succeeds. `paymentType` is
-   * undocumented in the OpenAPI spec (which lists only itineraryId) but
-   * required by the actual upstream — "full" (pay everything now) or
-   * "plan" (deposit + balance, per-product). Known-broken as of
-   * 2026-09-15: verified live that the gateway drops this field entirely
-   * before forwarding it (identical ZodError with either value) — see
-   * ARCHITECTURE.md. Sent anyway, spec-correct, for when that's fixed. */
-  confirmBooking(itineraryId: string, brand: string, paymentType: "full" | "plan" = "full"): Promise<{ data: string }> {
-    return this.request("POST", "/v1/bookings", { body: { itineraryId, paymentType }, brand });
+  /** Confirm the booking after Stripe payment succeeds. `paymentType`
+   * ("full" or "plan"/deposit) used to be silently rejected by the
+   * gateway regardless of value — verified FIXED live 2026-09-14 ~21:35
+   * (real 200, no more ZodError). But a 200 here isn't the whole story:
+   * the full spec (`GET /v1/openapi.json`, not in the version originally
+   * reviewed) documents two more optional fields, `paymentIntentId` and
+   * `paymentStatus`, "forwarded to the brand site when present" — without
+   * them the brand site has no way to know which payment to attach, and
+   * verified live that the response is a degenerate one even after this
+   * fix: `data` just echoes back the itineraryId instead of a real
+   * "R-12345"-shaped reservation code (spec's own example), and the
+   * itinerary's `checkout.status` stays "BookingInitiated" rather than
+   * moving to a booked state — true even when `paymentIntentId`/
+   * `paymentStatus` ARE forwarded, pointing at a real, confirmed
+   * PaymentIntent from our own sanctioned-bypass Stripe account. Most
+   * likely explanation: the brand site can't verify a PaymentIntent from
+   * an account it doesn't itself own — expected in a *real* deployment,
+   * where the traveller's own browser would confirm HOFJ's own
+   * `GET .../payment` client_secret with the brand's own publishable key,
+   * never something minted server-side under our own bypass account. See
+   * ARCHITECTURE.md for the full trail — this is the accurate, current
+   * state, not a guess. */
+  confirmBooking(
+    itineraryId: string,
+    brand: string,
+    paymentType: "full" | "plan" = "full",
+    payment?: { paymentIntentId: string; paymentStatus: string },
+  ): Promise<{ data: string }> {
+    return this.request("POST", "/v1/bookings", { body: { itineraryId, paymentType, ...payment }, brand });
   }
 
   getQuota(): Promise<{ data: { remainingInWindow: number; limitPerMinute: number } }> {

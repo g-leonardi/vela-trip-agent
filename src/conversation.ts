@@ -42,6 +42,8 @@ function initialState(): ConversationState {
     rejectedProductIds: [],
     itineraryId: null,
     brand: null,
+    paymentIntentId: null,
+    paymentStatus: null,
     totalPrice: null,
     reservationCode: null,
     failureReason: null,
@@ -126,7 +128,7 @@ export class ConversationDO extends DurableObject<Env> {
         return { reply, state };
       }
       if (wantsRetry && bookingRetryable) {
-        const reply = await this.confirmBookingNow(state, "plan");
+        const reply = await this.confirmBookingNow(state, "full");
         state.messages.push({ role: "agent", text: reply, at: Date.now() });
         await this.saveState(state);
         return { reply, state };
@@ -530,30 +532,30 @@ export class ConversationDO extends DurableObject<Env> {
   }
 
   private async attemptPayment(state: ConversationState): Promise<string> {
+    // HOFJ's own payment-intent refresh used to 502 unconditionally — now
+    // fixed (verified live 2026-09-14 ~21:35, real client_secret comes
+    // back) — but there's still nowhere for that client_secret to go:
+    // this prototype has no Stripe Elements frontend to confirm it
+    // client-side, and verified live it belongs to a Stripe account our
+    // own key can't read at all (by design, most likely — see
+    // hofj/client.ts's doc on getPaymentIntent). So regardless of whether
+    // this call succeeds or fails, the only path actually completable
+    // from here is the sanctioned direct-Stripe bypass below. Still
+    // called for real every time — not skipped — so it stays a live,
+    // accurate check of upstream status instead of a stale assumption.
     try {
       await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
-      // Would hand the client_secret to the frontend for Stripe.js here;
-      // left for confirmPaymentAndBook() to be invoked once Stripe confirms
-      // client-side. See ARCHITECTURE.md — untestable while the upstream
-      // payment endpoint 502s, kept spec-correct for when it recovers.
-      state.stage = "paying";
-      return this.say(state, { kind: "payment_unavailable", retrying: true });
     } catch (err) {
       if (err instanceof HofjApiError) {
         console.error("getPaymentIntent failed:", err.status, err.detail.slice(0, 200));
       }
-      // HOFJ's own payment-intent refresh is broken (502, upstream 405).
-      // Vela confirmed (Carlo, 2026-09-15) that creating the PaymentIntent
-      // directly against their Stripe account is the *sanctioned* bypass
-      // for this, not a workaround we invented unilaterally — see
-      // stripe/client.ts and ARCHITECTURE.md.
-      if (this.env.STRIPE_SECRET_KEY) {
-        return this.attemptDirectStripePayment(state);
-      }
-      state.stage = "failed";
-      state.failureReason = err instanceof HofjApiError ? `payment: ${err.message}` : String(err);
-      return this.say(state, { kind: "payment_unavailable", retrying: false });
     }
+    if (this.env.STRIPE_SECRET_KEY) {
+      return this.attemptDirectStripePayment(state);
+    }
+    state.stage = "failed";
+    state.failureReason = "payment: no payment path available (no Stripe key configured)";
+    return this.say(state, { kind: "payment_unavailable", retrying: false });
   }
 
   /** Real Stripe test-mode payment, created and confirmed directly against
@@ -572,16 +574,21 @@ export class ConversationDO extends DurableObject<Env> {
         currency: state.totalPrice!.currency,
         itineraryId: state.itineraryId!,
       });
-      await confirmPaymentIntent(this.env, intent.id);
-      // Real payment succeeded. Now try the actual booking confirmation —
-      // verified live (2026-09-15) that HOFJ's gateway drops the required
-      // paymentType field regardless of value ("full" and "plan" both
-      // 400 identically), so this is very likely to fail too, but it's
-      // their bug, worth attempting for real every time in case it's
-      // fixed mid-session (shared backend, can change without notice).
-      // "plan" first per Carlo's tip: the one real production product he
-      // pointed at uses a deposit/plan model, not full payment.
-      return this.confirmBookingNow(state, "plan");
+      const confirmed = await confirmPaymentIntent(this.env, intent.id);
+      state.paymentIntentId = intent.id;
+      state.paymentStatus = confirmed.status;
+      // Real payment succeeded. "full" because that's what we actually
+      // just did — charged the entire total in one PaymentIntent, not a
+      // deposit — not a guess at what the gateway wants (verified live
+      // 2026-09-14 ~21:35 that the paymentType field itself is no longer
+      // rejected either way). paymentIntentId/paymentStatus (persisted
+      // above, forwarded inside confirmBookingNow) per the full OpenAPI
+      // spec (GET /v1/openapi.json) — without them the brand site has
+      // nothing to attach the payment to at all. Still not sufficient for
+      // a genuinely completed booking as of that same verification (see
+      // confirmBooking's doc, hofj/client.ts) — sent anyway, spec-correct,
+      // since that gap may close without notice on a shared backend.
+      return this.confirmBookingNow(state, "full");
     } catch (err) {
       state.stage = "failed";
       state.failureReason = `payment: ${err instanceof Error ? err.message : String(err)}`;
@@ -597,7 +604,10 @@ export class ConversationDO extends DurableObject<Env> {
    * specific step should never re-charge anything. */
   private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
     try {
-      const booking = await this.hofj.confirmBooking(state.itineraryId!, state.brand!, paymentType);
+      const payment = state.paymentIntentId
+        ? { paymentIntentId: state.paymentIntentId, paymentStatus: state.paymentStatus ?? "succeeded" }
+        : undefined;
+      const booking = await this.hofj.confirmBooking(state.itineraryId!, state.brand!, paymentType, payment);
       state.stage = "booked";
       state.reservationCode = booking.data;
       return this.say(state, {

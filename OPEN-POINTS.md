@@ -3,28 +3,70 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
-## Bloccanti reali (non risolvibili lato nostro)
+## Bloccanti storici, ENTRAMBI risolti lato HOFJ (2026-09-14 ~21:35) — vedi sotto per lo stato attuale
 
-- **`POST /v1/bookings` rifiuta sempre con `paymentType` invalid_value
-  (expected "full"|"plan")**, indipendentemente da cosa mandiamo (provato
-  nel body, come query param, dopo un pagamento Stripe vero e riuscito).
-  Il gateway `api.hofj.com` scarta quel campo prima di inoltrarlo al
-  backend del brand — è un bug del loro gateway, non qualcosa aggirabile
-  con credenziali diverse. **Stato: isolato e provato definitivamente
-  2026-09-14 ~17:00, non risolvibile da qui.**
-  - **Aggiornamento 2026-09-14 ~17:35, dopo il tip di Carlo**: provato
-    `paymentType: "plan"` invece di `"full"` su un booking reale, dopo un
-    pagamento Stripe diretto vero e riuscito (PaymentIntent
-    `pi_3UFbvbRpam3eRRKb0Cn6XJ12`, 730€, `succeeded`). Risultato:
-    **identico errore generico 502** dell'altro valore. Questo chiude
-    definitivamente l'ipotesi "valore sbagliato" — è un bug di
-    field-forwarding nel gateway (il campo viene scartato comunque prima
-    di arrivare al backend del brand), non una questione di quale valore
-    scegliere. Nessun valore di `paymentType` sblocca `/v1/bookings` allo
-    stato attuale. Riportato a Giuseppe per il relay a Carlo.
-- **`GET .../itineraries/{id}/payment` risponde sempre 502** (upstream
-  405). Bypassato con successo creando il PaymentIntent direttamente via
-  Stripe (vedi sotto) — ma questo non sblocca il bloccante sopra.
+- ~~**`POST /v1/bookings` rifiuta sempre con `paymentType` invalid_value**~~
+  — **FIXATO da Vela**, confermato dal vivo 2026-09-14 ~21:35: lo stesso
+  identico body che dava 400/502 tutto il giorno ora risponde 200 reale,
+  qualunque valore di `paymentType`. Cronologia mantenuta per onestà:
+  provato anche `"plan"` alle ~17:35 dopo il tip di Carlo, stesso identico
+  errore di `"full"` — chiudeva l'ipotesi "valore sbagliato" a favore di
+  "il gateway scarta il campo a prescindere". Quella diagnosi era corretta
+  per allora; il bug ora non c'è più.
+- ~~**`GET .../itineraries/{id}/payment` risponde sempre 502`**~~ —
+  **FIXATO da Vela**, confermato dal vivo 2026-09-14 ~21:35: restituisce
+  un `client_secret` Stripe reale. Bypassato con successo per tutta la
+  sessione creando il PaymentIntent direttamente (vedi sotto) — resta
+  comunque necessario anche ora, per un motivo diverso: vedi sotto.
+
+## Stato attuale del booking end-to-end, dopo i due fix sopra (2026-09-14 ~21:45)
+
+Con entrambi i bug storici chiusi, ho rifatto un giro completo dal vivo.
+Non tutto è risolto — quello che segue è preciso, non ottimistico:
+
+- **Il `client_secret` restituito da `GET .../payment` appartiene a un
+  account Stripe che la nostra chiave `rk_test_...` non può leggere**
+  (verificato: sia `GET` che `confirm` su quel PaymentIntent danno
+  `resource_missing` 404). Non è un bug — è quasi certamente corretto per
+  design: in un vero deployment sarebbe il browser del viaggiatore a
+  confermarlo con la chiave pubblicabile del brand, mai noi lato server.
+  Ma significa che il flusso "nativo" resta comunque non completabile da
+  qui, anche ora che non 502 più — non abbiamo un frontend Stripe.js reale
+  per consumarlo. **Corretto lato nostro**: `attemptPayment()` non si
+  blocca più in stato "paying" in attesa di una conferma che non arriverà
+  mai (prima un vero dead-end, ora scoperto perché il native endpoint può
+  avere successo); prova comunque il flusso nativo per essere
+  spec-corretti e per log, ma passa sempre al bypass diretto Stripe (che
+  sappiamo funzionare per davvero) per completare qualcosa.
+- **Scoperto nello spec completo (`GET /v1/openapi.json`, non consultato
+  prima in questo dettaglio) due campi opzionali mai usati finora**:
+  `paymentIntentId` e `paymentStatus` su `POST /v1/bookings` — "forwarded
+  to the brand site when present". Senza di loro il campo `data` della
+  risposta 200 si limitava a ripetere l'itineraryId invece di un vero
+  codice prenotazione, e `checkout.status` restava `"BookingInitiated"`.
+  **Corretto**: ora forwardati sempre (`hofj/client.ts`, `conversation.ts`
+  — persistiti in `state.paymentIntentId`/`paymentStatus` così anche un
+  "riprova" successivo li re-invia senza dover ripagare).
+- **Con questi due campi forwardati, un giro completo reale dell'app ha
+  raggiunto `stage: "booked"` per la prima volta**: pagamento Stripe vero
+  e riuscito (`pi_3UFfmKRpam3eRRKb1tCnbEW0`, 730€), `POST /v1/bookings`
+  200 con un `data` DIVERSO dall'itineraryId (`qu5i422yzsla` vs
+  `rejgs7dq5kua` — non è più un semplice eco, la forma dichiarata dallo
+  spec per un vero codice prenotazione). **Non però verificabile in modo
+  indipendente al 100%**: `checkout.status` sull'itinerario restava
+  comunque `"BookingInitiated"` anche dopo, e l'unico endpoint che
+  espone lo stato REALE della prenotazione (`GET /v1/bookings/{id}`,
+  schema `BookingStatus`: `pending`/`payment_failed`/`confirmed`/
+  `cancelled`) richiede un token di autenticazione end-user
+  (`X-End-User-Authorization`) che non abbiamo — la nostra chiave da
+  1500b sviluppatore-B2B dà 401 su quell'endpoint specifico, per design
+  presumibilmente (è pensato per il sito del brand che mostra "i miei
+  ordini" a un cliente loggato, non per un'integrazione B2B). **Domanda
+  aperta per Carlo**: `checkout.status` che resta "BookingInitiated" dopo
+  un 200 su `/v1/bookings` con un `data` genuino è normale (due sistemi
+  diversi con lifecycle separati, cart vs order) o è un segno che la
+  prenotazione non si è davvero finalizzata? Non lo sappiamo con
+  certezza da qui.
 
 ## Risolto in questa sessione (per riferimento, non più aperto)
 

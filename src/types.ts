@@ -193,6 +193,15 @@ export interface ConversationState {
    * a later turn (attemptPayment, confirmBookingNow) still targets the
    * right brand even if `proposal` itself has since changed or cleared. */
   brand: string | null;
+  /** The Stripe PaymentIntent id/status from our own sanctioned-bypass
+   * payment (see stripe/client.ts), forwarded to POST /v1/bookings as
+   * `paymentIntentId`/`paymentStatus` — documented, optional fields the
+   * brand site needs to attach a real payment to the booking (see
+   * confirmBooking's doc, hofj/client.ts). Persisted so a "riprova" on a
+   * later turn re-sends the SAME already-confirmed payment instead of
+   * charging again. */
+  paymentIntentId: string | null;
+  paymentStatus: string | null;
   totalPrice: { amount: string; currency: string } | null;
   reservationCode: string | null;
   failureReason: string | null;
