@@ -189,9 +189,44 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
      schermo, non come optional ma come vincolo di design dall'inizio.
 
 ## 4. Metodo agentico (15%)
-- Agenti/tool usati (Claude Code, sessioni, ruoli):
-- Come il log grezzo in /agent-log/ documenta il processo:
-- Decisioni prese dall'agente vs decisioni prese da Giuseppe:
+
+- **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
+  dentro questa cartella (nessun sotto-agente delegato per l'esecuzione
+  principale — la stessa sessione ha esplorato l'API dal vivo con `curl`,
+  scritto il codice, girato `wrangler dev`/`vitest`/`k6`, diagnosticato bug
+  via `wrangler tail`, e deployato con `wrangler deploy`). Scelta
+  deliberata, non di default: il brief chiede che i timestamp dei commit,
+  i log degli agenti e gli eventi pausa/ripresa raccontino la stessa
+  storia coerente — frammentare il lavoro su sotto-agenti avrebbe sparso
+  quella storia su transcript separati, più difficili da incrociare.
+  `Agent`/sotto-agenti restano un'opzione dichiarata nel brief per pezzi
+  grandi e indipendenti, ma in pratica il lavoro è risultato abbastanza
+  interconnesso (ogni scoperta sull'API ha cambiato il codice appena
+  scritto) da rendere l'esecuzione singola-sessione la scelta più onesta,
+  non solo la più semplice.
+- **Come il log grezzo in `/agent-log/` documenta il processo**: è
+  l'export non editato del file `.jsonl` di questa sessione (vedi
+  `agent-log/README.md` per il meccanismo) — include le chiamate `curl`
+  reali contro `api.hofj.com`, i tentativi falliti prima di capire il bug
+  del 502/405 sul pagamento, la diagnosi in diretta della soglia Workers
+  AI esaurita via `wrangler tail`, e le domande poste a Giuseppe nei
+  momenti di reale ambiguità (vedi punto sotto). Non è stato riscritto né
+  ripulito: dove qualcosa è stato tentato e scartato (es. il primo
+  `keyword` di ricerca senza filtro città), resta visibile.
+- **Decisioni prese dall'agente vs decisioni prese da Giuseppe**: le
+  decisioni di prodotto/vincolo (stack TypeScript+Workers, pattern di
+  confidenza categorico, vincoli del manifesto) arrivano dal
+  `AGENT-BRIEF.md` già scritto in fase di pianificazione privata (vedi
+  sotto). Le decisioni tecniche di implementazione (come classificare
+  exact/compromise/none, come gestire i due bug upstream, come strutturare
+  `engine/ai.ts`) sono dell'agente. Due volte durante la sessione la
+  decisione è stata esplicitamente rimandata a Giuseppe invece di
+  procedere da soli, perché comportava un trade-off che solo lui poteva
+  giudicare: (1) come gestire i due endpoint HOFJ bloccati (documentare e
+  continuare vs cercare ancora un workaround), (2) come sbloccare la
+  soglia Workers AI esaurita (upgrade a pagamento vs chiave Anthropic vs
+  aspettare il reset) — entrambe visibili nel log come domande poste
+  esplicitamente, non decise in autonomia.
 
 ### Verifica qualità Workers AI, dal vivo (2026-09-14 ~14:00)
 
@@ -273,8 +308,15 @@ pochi minuti invece di restare un "non capisco perché fallisce" silenzioso.
 motore primario per NLU/NLG in italiano — il fraseggio delle proposte
 ("non riesco a 365€, il prezzo reale è 465€, procedo?") è risultato naturale
 e rispetta il vincolo "una proposta alla volta" senza bisogno di prompt
-engineering aggressivo. Il fallback Anthropic Haiku resta cablato in
-`engine/ai.ts` ma non è mai stato attivato: non è risultato necessario.
+engineering aggressivo. Il fallback Anthropic Haiku, per come era stato
+progettato inizialmente, non sarebbe mai servito per *qualità* — ma è finito
+comunque per attivarsi davvero nella stessa sessione, per il motivo diverso
+di cui sopra (soglia gratuita esaurita), a riprova che vale la pena costruire
+un fallback anche quando il motore principale si comporta bene: il problema
+che lo attiva non è sempre quello che ti aspetti. Verificato dal vivo che
+Haiku regge lo stesso identico flusso — multi-turno a uno slot per volta,
+rinegoziazione budget a metà proposta senza un sì/no esplicito — con la
+stessa qualità di fraseggio e la stessa disciplina "una proposta alla volta".
 
 **Metodologia a due tracce (decisa in fase di preparazione):**
 - Una sessione privata di pianificazione (mai pubblicata) dove Giuseppe e un
