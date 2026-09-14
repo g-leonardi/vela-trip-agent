@@ -99,6 +99,25 @@ Passaggi:
    nel campo `key`, non serve nemmeno ricostruirla a mano.
 5. Chiave: **`VELA-5GZU-EHCM`** — accettata.
 
-## Chiave 5
+## Chiave 5 — "The nonce" (+150m)
 
-(da trovare)
+Consegna: richiedere un nonce da `/api/nonce` (vive 60s), calcolare
+HMAC-SHA256 di (nonce + email), con chiave l'concatenazione delle quattro
+chiavi già trovate, in ordine, esattamente come consegnate. Sottomettere il
+risultato come hex minuscolo.
+
+Passaggi:
+1. `GET /api/nonce` (token di sessione Vela) →
+   `{"nonce":"69a52283ed0af2ecf848d26f6690676d","expiresInMs":60000,...}`.
+2. Chiave HMAC = concatenazione diretta, senza separatori:
+   `VELA-T8AG-2FVB` + `p_g_np3dww01` + `d84c70b2` + `VELA-5GZU-EHCM`.
+3. Messaggio = `nonce + email`, senza separatori:
+   `69a52283ed0af2ecf848d26f6690676dgleonardi87@gmail.com`.
+4. `HMAC-SHA256(messaggio, chiave)` in hex minuscolo, calcolato subito dopo
+   aver ricevuto il nonce per stare dentro i 60s di validità.
+5. Chiave: **`1ebb542b4be392373a44bdaebdcfa724cd2a61815fc06ea2c229302ca94c6ec5`**
+   — accettata.
+
+---
+
+**Catena completa: 5 di 5 chiavi trovate, +5h totali guadagnate sul clock.**
