@@ -20,6 +20,15 @@ export class AiUnavailableError extends Error {}
 // live, not model-specific — happens across models). Not worth failing an
 // entire conversation over, so retry a couple of times before falling back
 // / giving up — same spirit as the HOFJ client's retry-once-on-transient.
+//
+// Error 4006 is different: it means the daily free neuron allocation is
+// exhausted (hit for real on 2026-09-14 after the k6 load test — see
+// ARCHITECTURE.md). That's not transient within the day, so retrying is
+// pure wasted latency — fail straight to the Anthropic fallback instead.
+function isQuotaExhausted(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("4006");
+}
+
 async function runWorkersAi(env: Env, system: string, user: string): Promise<string> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -38,6 +47,8 @@ async function runWorkersAi(env: Env, system: string, user: string): Promise<str
       throw new Error("empty Workers AI response: " + JSON.stringify(res).slice(0, 300));
     } catch (err) {
       lastErr = err;
+      console.error(`Workers AI attempt ${attempt + 1}/3 failed:`, err instanceof Error ? err.message : err);
+      if (isQuotaExhausted(err)) break;
       if (attempt < 2) await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
     }
   }

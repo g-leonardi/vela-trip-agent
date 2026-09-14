@@ -255,6 +255,20 @@ sì terminale). Questa distinzione (hiccup del motore di linguaggio = non
 fatale, errore della pipeline di booking reale = fatale) è una decisione
 architetturale esplicita in `conversation.ts`.
 
+**Soglia gratuita raggiunta per davvero** (2026-09-14 ~14:45, dopo il load
+test k6 + i test manuali di questa sessione): Workers AI ha iniziato a
+rifiutare ogni chiamata con `4006: you have used up your daily free
+allocation of 10,000 neurons`. Il brief stesso anticipava questa soglia
+("gratuito entro la soglia") — l'abbiamo raggiunta davvero, non è
+ipotetica. Il fallback Anthropic Haiku esiste in `engine/ai.ts` proprio
+per questo scenario (oltre che per un calo di qualità), ma richiede una
+`ANTHROPIC_API_KEY` che non era ancora configurata quando l'abbiamo
+trovato — decisione presa con Giuseppe su come procedere registrata nel
+prossimo commit. Aggiunto nel frattempo un `console.error` per tentativo
+fallito in `runWorkersAi()`, cablato apposta per essere visibile via
+`wrangler tail` — è così che questo problema è stato diagnosticato in
+pochi minuti invece di restare un "non capisco perché fallisce" silenzioso.
+
 **Conclusione**: Workers AI (Llama 3.3 70B) è qualitativamente adeguato come
 motore primario per NLU/NLG in italiano — il fraseggio delle proposte
 ("non riesco a 365€, il prezzo reale è 465€, procedo?") è risultato naturale
