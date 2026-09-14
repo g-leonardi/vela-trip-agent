@@ -48,6 +48,22 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     scegliere tra hotel alternativi (violerebbe comunque il vincolo "mai
     una lista tra cui scegliere" — coerente con lo scope, non solo un
     taglio per il tempo).
+  - **Test diretti su `conversation.ts`**: le 27 unit test in `test/`
+    coprono `engine/matcher.ts`, `engine/dates.ts` e `hofj/client.ts` —
+    tutta la logica pura/deterministica, dove i test hanno più valore e
+    zero costo/rischio (nessuna chiamata AI o HOFJ reale). La Durable
+    Object che orchestra tutto (`conversation.ts`) non ha test diretti:
+    testarla per davvero richiederebbe o mockare `env.AI` dentro il
+    binding reale della DO (fragile, si scontra con lo stesso problema di
+    proxy remoto che ha già rallentato la suite una volta — vedi commit
+    "unblock test suite from remote AI proxy"), oppure disaccoppiare
+    l'AI/HOFJ client con dependency injection solo per testabilità, un
+    refactor non banale a questo punto della sessione. Scelta consapevole:
+    la macchina a stati è stata validata con test end-to-end reali dal
+    vivo (multi-turno, rinegoziazione budget a metà proposta, rifiuto e
+    proposta successiva, re-verifica silenziosa che cattura un prezzo
+    cambiato davvero) — visibili come traffico reale in `/agent-log/`, non
+    solo dichiarati qui.
 
 ## 2. Architettura di scalabilità (25%)
 
