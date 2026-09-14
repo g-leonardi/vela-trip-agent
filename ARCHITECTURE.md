@@ -173,13 +173,21 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
      Speech Recognition/Synthesis del browser gestisce input e output
      vocale, il testo è il ripiego dichiarato per chi non può parlare, e
      la trascrizione è chiusa in un `<details>` perché serve a chi
-     revisiona, non è il canale principale. In una versione non
-     minimale questo stesso motore (Worker + Durable Object + engine/)
-     non cambierebbe: cambierebbe solo dove arriva il turno di
-     conversazione — un numero di telefono, un canale WhatsApp/voce, un
-     dispositivo smart speaker — mentre oggi arriva da un tasto microfono
-     su una pagina, che è la versione onesta di "l'agente arriva dove sei
-     tu" costruibile nel tempo disponibile.
+     revisiona, non è il canale principale. Il primo tap sul microfono è
+     l'unico gesto richiesto (i browser lo impongono per concedere
+     l'accesso al microfono): da lì in poi il turno si chiude e riparte da
+     solo — appena l'agente finisce di parlare, il microfono si riattiva
+     senza bisogno di ritoccare lo schermo, finché la conversazione non
+     arriva a uno stato terminale (prenotato o fallito). Senza questo, "voce"
+     sarebbe stata solo un microfono attaccato a una chat che va comunque
+     guardata e ritoccata a ogni battuta — con questo, dopo il primo tap si
+     può davvero mettere via il telefono. In una versione non minimale
+     questo stesso motore (Worker + Durable Object + engine/) non
+     cambierebbe: cambierebbe solo dove arriva il turno di conversazione —
+     un numero di telefono, un canale WhatsApp/voce, un dispositivo smart
+     speaker — mentre oggi arriva da un tasto microfono su una pagina, che
+     è la versione onesta di "l'agente arriva dove sei tu" costruibile nel
+     tempo disponibile.
   4. **L'accessibilità non è un requisito estetico, è la prova che il
      modello funziona.** Se l'unica interfaccia reale fosse "guarda,
      confronta, clicca", chi non ha occhi/schermo/pazienza sarebbe

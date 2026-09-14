@@ -106,12 +106,30 @@
     transcript.scrollTop = transcript.scrollHeight;
   }
 
-  function speak(text) {
+  // Once true, the traveller has granted mic access at least once: after
+  // that, the loop stays hands-free — the agent's spoken reply
+  // auto-resumes listening instead of waiting for another tap. A tap is
+  // still required for the very first turn (browsers require a user
+  // gesture to grant mic access) and the loop stops on its own once the
+  // conversation reaches a terminal stage. This is the difference between
+  // "a chat with voice bolted on" and something you could actually run
+  // with the screen off.
+  let voiceModeActive = false;
+  const TERMINAL_STAGES = new Set(["booked", "failed"]);
+
+  function speak(text, stage) {
     if (!("speechSynthesis" in window)) return;
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "it-IT";
     mic.classList.add("speaking");
-    utter.onend = () => mic.classList.remove("speaking");
+    utter.onend = () => {
+      mic.classList.remove("speaking");
+      if (voiceModeActive && recognizer && !recognizing && !TERMINAL_STAGES.has(stage)) {
+        setTimeout(() => {
+          try { recognizer.start(); } catch (e) { /* already listening, ignore */ }
+        }, 300);
+      }
+    };
     speechSynthesis.cancel();
     speechSynthesis.speak(utter);
   }
@@ -131,10 +149,15 @@
         sessionId = data.sessionId;
         try { localStorage.setItem(SESSION_KEY, sessionId); } catch (e) {}
       }
+      const stage = data.state && data.state.stage;
       lastReply.textContent = data.reply || "";
       addMessage("agent", data.reply || "");
-      speak(data.reply || "");
-      status.textContent = "Tocca il microfono per rispondere";
+      speak(data.reply || "", stage);
+      status.textContent = TERMINAL_STAGES.has(stage)
+        ? "Conversazione conclusa — apri una nuova pagina per ricominciare"
+        : voiceModeActive
+          ? "…"
+          : "Tocca il microfono per rispondere";
     } catch (err) {
       status.textContent = "Errore di rete, riprova.";
     }
@@ -178,6 +201,7 @@
 
     mic.addEventListener("click", () => {
       if (recognizing) { recognizer.stop(); return; }
+      voiceModeActive = true;
       if ("speechSynthesis" in window) speechSynthesis.cancel();
       try { recognizer.start(); } catch (e) { /* already starting, ignore */ }
     });
