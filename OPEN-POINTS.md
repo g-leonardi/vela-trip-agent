@@ -86,6 +86,37 @@
   salta interamente lo step "collecting_traveller" fino all'apertura del
   carrello reale.
 
+## Bug trovato da Giuseppe testando dal vivo, sessione `81992bfd-...` (2026-09-14 ~18:20)
+
+Giuseppe ha ritestato la vecchia sessione `81992bfd-...` e ha segnalato
+"ancora non ci siamo". Ricostruendo la conversazione: aveva confermato
+DUE VOLTE un pacchetto Lanzarote (una prima conferma è finita in una
+rinegoziazione data onesta — "non riesco al 15, riesco al 17" — e lui ha
+confermato di nuovo), ma alla seconda conferma il prodotto è risultato
+comunque non prenotabile (stesso tipo di caso "prodotto non prenotabile"
+già documentato, non nuovo) *anche* sulla propria data di fallback, ed
+essendo l'ultimo candidato Lanzarote rimasto (l'altro era già stato
+scartato ore prima), la ricerca successiva è tornata a vuoto. **Bug reale
+trovato**: quando questo succede, `searchAndPropose()` rispondeva con un
+messaggio "no_match" completamente generico ("non ho trovato niente,
+dammi flessibilità"), senza alcun accenno al fatto che il pacchetto appena
+confermato due volte non fosse più prenotabile — un vero e proprio
+non-sequitur dal punto di vista del viaggiatore, che aveva appena detto
+"sì, procediamo" e si è visto rispondere come se stesse ripartendo da
+zero. La causa: il parametro `precededBy` (che già esisteva e alimentava
+l'acknowledgment "quel pacchetto non è più disponibile, però ho
+trovato...") veniva passato SOLO al ramo "ho trovato un'alternativa", mai
+al ramo "no_match" quando la ricerca di alternative falliva del tutto.
+**Corretto**: `precededBy` ora arriva anche al caso `no_match`, con un
+riconoscimento onesto ("il pacchetto che avevi appena confermato non è
+risultato prenotabile per davvero, e non ho nulla di equivalente da
+proporre al suo posto") prima della domanda di chiarimento. Deployato;
+verifica dal vivo end-to-end non facile da forzare in modo deterministico
+(dipende dallo stesso prodotto che fallisce due volte sull'inventario
+reale), ma il cambiamento è meccanico e a basso rischio — passa un
+parametro già esistente a un ramo che prima lo ignorava, nessuna nuova
+logica di business.
+
 ## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 
 - **"Shortlist" di città reali prima della scelta finale** (punto 1):

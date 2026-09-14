@@ -152,7 +152,7 @@ export type SayDirective =
   | { kind: "payment_unavailable"; retrying: boolean }
   | { kind: "booking_forbidden" }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
-  | { kind: "no_match" };
+  | { kind: "no_match"; precededBy?: "rejected" | "unavailable" };
 
 function buildSaySystem(language: string | null): string {
   return `Sei la voce di un agente di prenotazione viaggi sportivi (padel/tennis + hotel), pensato per essere ascoltato più che letto: l'interazione è vocale, il viaggiatore potrebbe non guardare uno schermo. Parla in modo naturale, caldo, diretto, come faresti al telefono.
@@ -227,8 +227,24 @@ function directiveToInstruction(d: SayDirective): string {
       return `C'è un problema di autorizzazione lato nostro sistema che impedisce di confermare la prenotazione in questo momento (non è colpa del viaggiatore né un problema di disponibilità). Scusati, sii onesto e diretto, di' che verrà segnalato internamente.`;
     case "booked":
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
-    case "no_match":
-      return `Non hai trovato nulla che corrisponda in modo ragionevole a quanto chiesto finora (troppo lontano da budget o date disponibili). Non proporre nulla di debole: fai una domanda di chiarimento per allargare la ricerca (es. altra città, budget più alto, date più flessibili).`;
+    case "no_match": {
+      // Same "acknowledge what just happened, in the same breath" pattern
+      // used by "propose"'s precededBy — regression found live
+      // (sessionId 81992bfd-...): the traveller confirmed a compromise
+      // proposal twice, it turned out not to be bookable even on its own
+      // negotiated date, and once every known candidate for that request
+      // was exhausted the reply reverted to a generic "tell me your
+      // flexibility" question with zero mention of the package they'd
+      // just said yes to — a jarring non-sequitur from their side, not
+      // just a missed nicety.
+      const lead =
+        d.precededBy === "rejected"
+          ? "Il viaggiatore ha appena rifiutato la proposta precedente. Riconoscilo in una parola o due, poi, nello stesso messaggio, "
+          : d.precededBy === "unavailable"
+            ? "Il pacchetto che il viaggiatore aveva appena confermato non è risultato prenotabile per davvero (un problema del fornitore, non suo), e non c'è più nulla di equivalente da proporre al suo posto. Diglielo con onestà in breve, poi, nello stesso messaggio, "
+            : "";
+      return `${lead}Non hai trovato nulla che corrisponda in modo ragionevole a quanto chiesto finora (troppo lontano da budget o date disponibili). Non proporre nulla di debole: fai una domanda di chiarimento per allargare la ricerca (es. altra città, budget più alto, date più flessibili).`;
+    }
   }
 }
 

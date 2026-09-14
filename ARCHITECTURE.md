@@ -687,6 +687,39 @@ prezzo prima della proposta stessa così il prezzo mostrato è già
 "confermato" (punto 5 — solo chiarito con Giuseppe, non ancora approvato
 esplicitamente).
 
+### Bug reale trovato da Giuseppe ritestando dal vivo la sessione `81992bfd-...` (2026-09-14 ~18:20)
+
+"Ancora non ci siamo", ha scritto Giuseppe dopo aver ripreso questa
+conversazione (la stessa già usata per i bug precedenti sulla città e sul
+tono). Ricostruendo lo scambio: aveva confermato un pacchetto Lanzarote,
+ricevuto un'onesta rinegoziazione data ("non riesco al 15, riesco al 17"),
+confermato di nuovo — e alla seconda conferma il prodotto è risultato
+comunque non prenotabile *anche* sulla propria data di fallback (lo stesso
+tipo di "prodotto non prenotabile" già documentato, non una scoperta
+nuova). Essendo l'ultimo candidato Lanzarote rimasto per quella richiesta,
+la ricerca successiva di alternative è tornata a vuoto.
+
+**Il bug vero**: in quel momento la risposta è stata un `no_match`
+completamente generico ("non ho trovato niente, dammi flessibilità"),
+senza una parola sul fatto che il pacchetto appena confermato due volte
+non fosse più prenotabile — un non-sequitur netto dal punto di vista di
+chi ha appena detto "sì, procediamo". Il meccanismo di acknowledgment
+esisteva già (`precededBy`, usato per dire "quel pacchetto non è più
+disponibile, però ho trovato quest'altro..." quando SI trova
+un'alternativa), ma veniva passato solo al ramo "trovata un'alternativa",
+mai al ramo "non ho trovato nulla" — il caso peggiore, quello dove
+l'acknowledgment serve di più, era proprio quello silenzioso. **Corretto**
+in `src/engine/ai.ts` (`SayDirective`'s `no_match` ora porta anche
+`precededBy`, con un'istruzione dedicata che riconosce onestamente il
+fallimento prima della domanda di chiarimento) e in
+`src/conversation.ts` (`searchAndPropose()` passa `precededBy` anche al
+ramo `no_match`, non solo a quello di successo). Deployato; verifica dal
+vivo end-to-end non forzata in modo deterministico (dipende dallo stesso
+prodotto che fallisce due volte sull'inventario reale, non riproducibile
+a comando), ma il cambiamento è meccanico e a basso rischio — instrada un
+parametro già esistente verso un ramo che prima lo ignorava, nessuna
+nuova logica di business introdotta.
+
 ## 5. Padronanza API (10%)
 - API fornita da Vela: endpoint chiave usati, autenticazione, limiti osservati:
 - Come l'abbiamo integrata / eventuali workaround:

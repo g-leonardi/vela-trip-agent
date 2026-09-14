@@ -323,9 +323,14 @@ export class ConversationDO extends DurableObject<Env> {
   }
 
   /** `precededBy` folds a one-line acknowledgment of why we're searching
-   * again into the SAME proposal message ("quel pacchetto non risulta più
+   * again into the SAME message ("quel pacchetto non risulta più
    * disponibile, però ho trovato quest'altro...") instead of a separate
-   * filler turn. */
+   * filler turn — and still applies even when the search comes up
+   * completely empty (regression found live, sessionId 81992bfd-...: a
+   * twice-confirmed proposal turned out unbookable, the fallback search
+   * found nothing else either, and the reply silently dropped the
+   * acknowledgment, reading as a non-sequitur "tell me your flexibility"
+   * with no mention of what had just failed). */
   private async searchAndPropose(
     state: ConversationState,
     precededBy?: "rejected" | "unavailable",
@@ -334,7 +339,7 @@ export class ConversationDO extends DurableObject<Env> {
     const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
       state.stage = "collecting";
-      return this.say(state, { kind: "no_match" });
+      return this.say(state, { kind: "no_match", precededBy });
     }
     state.cityAskAttempts = 0;
     state.budgetAskAttempts = 0;
