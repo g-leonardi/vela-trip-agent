@@ -376,6 +376,14 @@ engineering aggressivo. Il fallback Anthropic Haiku resta cablato in
 - API key fornita: vedi CREDENZIALI.local.md (gitignorato, mai in questo repo)
 
 ## Decisioni ancora aperte (in attesa di leggere il brief completo)
-- [ ] Stack applicativo (dipende da cosa fornisce l'API di Vela)
-- [ ] Hosting/deploy target
-- [ ] Persistenza dati (se serve un DB nostro oltre l'API di Vela)
+
+Risolte durante la sessione pubblica (lasciate qui, non cancellate, per
+mostrare cosa si sapeva prima di Start e cosa si è scoperto dopo):
+- [x] Stack applicativo → Cloudflare Worker + Durable Object per
+  conversazione, TypeScript, come da `AGENT-BRIEF.md`.
+- [x] Hosting/deploy target → Cloudflare (`workers.dev`), stesso account
+  del binding Workers AI — nessun target esterno necessario.
+- [x] Persistenza dati → nessun DB nostro: lo stato di conversazione vive
+  nello storage della Durable Object stessa (una per conversazione),
+  l'inventario/booking resta sorgente di verità su HOFJ. Non serve altro
+  per lo scope attuale.
