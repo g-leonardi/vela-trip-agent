@@ -37,6 +37,29 @@ Passaggi:
    risposta: `{ "data": { "ledger": "vela-1", "issuedTo": "...", "entry": "VELA-T8AG-2FVB" } }`
 6. Chiave: `VELA-T8AG-2FVB` — accettata.
 
-## Chiave 2
+## Chiave 2 — "The cart" (+45m)
+
+Consegna: aprire un cart HOFJ per il prodotto 118 (Premier Padel Finals
+Barcelona 2026, brand indicato come "staging.weebora.com"), 2 adulti 1
+camera, su una data valida. Chiave = id dell'hotel più economico offerto.
+
+Passaggi (con due inciampi reali, non solo il percorso pulito):
+1. `brand=staging.weebora.com` dà 400 Bad Request — il brand indicato nel
+   testo dello stage non è quello valido. `GET /v1/distribution-channels`
+   restituisce i brand veri: il dominio corretto è **`weebora.com`** (senza
+   "staging.").
+2. `GET /v1/products/118?brand=weebora.com` conferma le date valide:
+   `minDate`/`maxDate` 2026-12-08 → 2026-12-13.
+3. `POST /v1/itineraries?brand=weebora.com&locale=en` con
+   `{"productId":118,"startDate":"2026-12-08","adults":2,"rooms":1}` — primo
+   tentativo ha dato 502 "upstream timeout" (l'inventario reale, come
+   avvisato nel brief). Al retry è andato a buon fine, `itineraryId` ottenuto.
+4. `GET /v1/itineraries/{id}/accommodations?brand=weebora.com&locale=en&startDate=2026-12-08&sortByValue=priceAsc`
+   — richiede `startDate` anche qui (non basta averlo dato alla creazione
+   dell'itinerario). Ordinando per prezzo crescente, il primo elemento è il
+   più economico.
+5. Chiave: **`p_g_np3dww01`** (SB Plaza Europa, 184€) — accettata.
+
+## Chiave 3
 
 (da trovare)
