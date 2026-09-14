@@ -1,0 +1,29 @@
+// Test-only wrangler config. Mirrors wrangler.jsonc but drops the AI
+// binding's "remote: true": these are unit tests for pure/mocked logic
+// (engine/matcher.ts, engine/dates.ts, hofj/client.ts) that never touch
+// env.AI, and starting a remote proxy session on every test run is slow
+// and depends on network reachability we don't need here (observed
+// flaky DNS to api.cloudflare.com in this sandbox — unrelated to the app
+// code, see ARCHITECTURE.md). Keep this in sync with wrangler.jsonc for
+// any binding the tests actually need.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "vela-trip-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONVERSATION", "class_name": "ConversationDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] }
+  ],
+  "vars": {
+    "HOFJ_BASE_URL": "https://api.hofj.test",
+    "HOFJ_BRAND": "terrarossa.com",
+    "HOFJ_LOCALE": "it",
+    "HOFJ_API_KEY": "test-key"
+  }
+}

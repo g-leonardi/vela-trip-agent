@@ -80,9 +80,30 @@ export class ConversationDO extends DurableObject<Env> {
     let state = await this.loadState();
     state.messages.push({ role: "traveller", text, at: Date.now() });
 
-    if (state.stage === "booked" || state.stage === "failed") {
-      const reply = state.stage === "booked"
-        ? `La tua prenotazione è già confermata, codice ${state.reservationCode}. Per un nuovo viaggio apri una nuova conversazione.`
+    if (state.stage === "booked") {
+      const reply = `La tua prenotazione è già confermata, codice ${state.reservationCode}. Per un nuovo viaggio apri una nuova conversazione.`;
+      state.messages.push({ role: "agent", text: reply, at: Date.now() });
+      await this.saveState(state);
+      return { reply, state };
+    }
+
+    // The HOFJ inventory/backend is shared and can change mid-session (the
+    // brief flags this explicitly) — a payment failure specifically is
+    // exactly the transient-looking case worth letting the traveller
+    // retry, without starting a whole new conversation/cart. A bookings
+    // permission failure (403) is not: retrying won't fix a missing
+    // entitlement, so that one stays terminal.
+    if (state.stage === "failed") {
+      const retryable = state.failureReason?.startsWith("payment:") && state.itineraryId;
+      const wantsRetry = /riprova|di nuovo|ritenta|prova ancora|retry/i.test(text);
+      if (retryable && wantsRetry) {
+        const reply = await this.attemptPayment(state);
+        state.messages.push({ role: "agent", text: reply, at: Date.now() });
+        await this.saveState(state);
+        return { reply, state };
+      }
+      const reply = retryable
+        ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi, oppure apri una nuova conversazione.`
         : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
       state.messages.push({ role: "agent", text: reply, at: Date.now() });
       await this.saveState(state);
