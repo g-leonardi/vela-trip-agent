@@ -79,6 +79,26 @@ Passaggi:
    `d84c70b2`.
 4. Chiave: **`d84c70b2`** — accettata.
 
-## Chiave 4
+## Chiave 4 — "The stream" (+75m)
+
+Consegna: `/api/stream` dà un carattere alla volta e "non si lascia
+affrettare" — troppo veloce e dimentica tutto il progresso.
+
+Passaggi:
+1. Autenticato con il token di sessione Vela (`localStorage` /
+   `vela.dev.session.v1`, non la chiave HOFJ — è un endpoint del backend
+   della challenge, non di HOFJ).
+2. Prima chiamata già molto parlante:
+   `{"done":false,"index":0,"total":14,"char":"V","remainingInWindow":2,"windowResetsInMs":10000}`
+   — 14 caratteri totali, finestra di 10s con un numero di richieste
+   consentite che il server dichiara ad ogni risposta.
+3. Loop che rispetta esattamente `remainingInWindow`/`windowResetsInMs`
+   invece di indovinare un ritmo fisso: quando `remainingInWindow` arriva a
+   0, aspetta il tempo indicato prima di richiedere ancora.
+4. L'ultima risposta (`done:true`) include direttamente la chiave assemblata
+   nel campo `key`, non serve nemmeno ricostruirla a mano.
+5. Chiave: **`VELA-5GZU-EHCM`** — accettata.
+
+## Chiave 5
 
 (da trovare)
