@@ -25,19 +25,19 @@ const baseSlots: Slots = { ...EMPTY_SLOTS, sport: "tennis", city: "Roma", adults
 
 describe("classify", () => {
   it("returns null when there are no candidates", () => {
-    expect(classify(baseSlots, [], [])).toBeNull();
+    expect(classify(baseSlots, [], [], true)).toBeNull();
   });
 
-  it("classifies as exact when price and date both satisfy the request", () => {
+  it("classifies as exact when price, date and location all satisfy the request", () => {
     const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
-    const result = classify(slots, [product({ price: 365 })], []);
+    const result = classify(slots, [product({ price: 365 })], [], true);
     expect(result?.category).toBe("exact");
     expect(result?.compromise).toBeNull();
   });
 
   it("classifies as compromise when price exceeds budget but within tolerance", () => {
-    const slots: Slots = { ...baseSlots, budget: 300 };
-    const result = classify(slots, [product({ price: 465 })], []);
+    const slots: Slots = { ...baseSlots, budget: 300, dateFrom: "2026-09-25" };
+    const result = classify(slots, [product({ price: 465 })], [], true);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("price");
     expect(result?.compromise?.requested).toBe("300€");
@@ -45,14 +45,14 @@ describe("classify", () => {
   });
 
   it("returns null (ask a clarifying question) when price is unreasonably far over budget", () => {
-    const slots: Slots = { ...baseSlots, budget: 100 };
-    const result = classify(slots, [product({ price: 465 })], []);
+    const slots: Slots = { ...baseSlots, budget: 100, dateFrom: "2026-09-25" };
+    const result = classify(slots, [product({ price: 465 })], [], true);
     expect(result).toBeNull();
   });
 
   it("classifies as compromise when the requested date is outside the product window but close", () => {
     const slots: Slots = { ...baseSlots, dateFrom: "2026-08-20" }; // 12 days before minDate
-    const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], []);
+    const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("date");
     expect(result?.compromise?.offered).toBe("2026-09-01");
@@ -60,39 +60,53 @@ describe("classify", () => {
 
   it("returns null when the nearest available date is too far from what was requested", () => {
     const slots: Slots = { ...baseSlots, dateFrom: "2026-01-01" }; // months before minDate
-    const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], []);
+    const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);
     expect(result).toBeNull();
   });
 
   it("skips rejected products and proposes the next one", () => {
     const a = product({ productId: 1, price: 300 });
     const b = product({ productId: 2, price: 320 });
-    const result = classify(baseSlots, [a, b], ["1"]);
+    const result = classify({ ...baseSlots, dateFrom: "2026-09-25" }, [a, b], ["1"], true);
     expect(result?.candidate.productId).toBe("2");
   });
 
   it("proposes the candidate's earliest availability when no date was given at all, as a compromise (regression: live loop where the dialogue just re-asked 'when?' forever instead of ever proposing)", () => {
     const slots: Slots = { ...baseSlots, budget: 400 }; // no dateFrom
-    const result = classify(slots, [product({ price: 365, minDate: "2026-10-09" })], []);
+    const result = classify(slots, [product({ price: 365, minDate: "2026-10-09" })], [], true);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise).toEqual({ kind: "date_unspecified", requested: "", offered: "2026-10-09" });
   });
 
   it("lets an unresolved price compromise take priority over date_unspecified in the message (both true, but only one gets said)", () => {
     const slots: Slots = { ...baseSlots, budget: 100 }; // no dateFrom, price will also be off
-    const result = classify(slots, [product({ price: 150, minDate: "2026-10-09" })], []);
+    const result = classify(slots, [product({ price: 150, minDate: "2026-10-09" })], [], true);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("price");
   });
 
-  it("stays exact when a date wasn't asked about because price is fine and dateFrom truly wasn't relevant to this test's candidate window — still flags date_unspecified since no date is not 'no constraint'", () => {
+  it("flags date_unspecified when no date was given even with a generous budget", () => {
     const slots: Slots = { ...baseSlots, budget: 1000 }; // generous budget, no dateFrom
-    const result = classify(slots, [product({ price: 200 })], []);
+    const result = classify(slots, [product({ price: 200 })], [], true);
     // No date at all is never "exact" — the system is choosing a date on
     // the traveller's behalf, which always deserves an explicit compromise
     // confirmation, never a silent "matches exactly".
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("date_unspecified");
+  });
+
+  it("flags location_unspecified when locationMatched is false, even with everything else exact", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const result = classify(slots, [product({ price: 365, primaryDestination: "milano" })], [], false);
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise).toEqual({ kind: "location_unspecified", requested: "Roma", offered: "milano" });
+  });
+
+  it("lets price take priority over location_unspecified in the message", () => {
+    const slots: Slots = { ...baseSlots, budget: 300, dateFrom: "2026-09-25" };
+    const result = classify(slots, [product({ price: 465 })], [], false);
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise?.kind).toBe("price");
   });
 });
 
@@ -105,23 +119,22 @@ function fakeHofjClient(byBrand: Record<string, SearchProduct[]>): HofjClient {
 }
 
 describe("searchCandidates", () => {
-  it("filters out results whose city doesn't match what was requested", () => {
+  it("filters out results whose city doesn't match what was requested", async () => {
     const wrongCity = product({ primaryDestination: "forte-dei-marmi", primaryVenue: "tennis-roma-fdm" });
     const rightCity = product({ productId: 2, primaryDestination: "rome-copy", title: "Roma Tennis Experience" });
     const hofj = fakeHofjClient({ "terrarossa.com": [wrongCity, rightCity] });
 
-    return searchCandidates(hofj, { ...baseSlots, city: "Roma" }).then((results) => {
-      expect(results).toHaveLength(1);
-      expect(results[0]!.productId).toBe(2);
-    });
+    const { candidates, locationMatched } = await searchCandidates(hofj, { ...baseSlots, city: "Roma" });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.productId).toBe(2);
+    expect(locationMatched).toBe(true);
   });
 
-  it("understands the roma/rome IT-EN synonym", () => {
+  it("understands the roma/rome IT-EN synonym", async () => {
     const rome = product({ primaryDestination: "rome", title: "Rome Tennis Getaway" });
     const hofj = fakeHofjClient({ "terrarossa.com": [rome] });
-    return searchCandidates(hofj, { ...baseSlots, city: "Roma" }).then((results) => {
-      expect(results).toHaveLength(1);
-    });
+    const { candidates } = await searchCandidates(hofj, { ...baseSlots, city: "Roma" });
+    expect(candidates).toHaveLength(1);
   });
 
   it("falls back to Weebora for padel when Terrarossa has nothing matching", async () => {
@@ -130,9 +143,33 @@ describe("searchCandidates", () => {
       "terrarossa.com": [],
       "weebora.com": [padelInWeebora],
     });
-    const results = await searchCandidates(hofj, { ...baseSlots, sport: "padel", city: "Valencia" });
-    expect(results).toHaveLength(1);
-    expect(results[0]!.productId).toBe(9);
+    const { candidates, locationMatched } = await searchCandidates(hofj, {
+      ...baseSlots,
+      sport: "padel",
+      city: "Valencia",
+    });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.productId).toBe(9);
+    expect(locationMatched).toBe(true);
+  });
+
+  it("falls back to unfiltered results (locationMatched: false) when the given city matches nothing anywhere, instead of returning empty (regression: live user's location never resolved to a real city)", async () => {
+    const elsewhere = product({ productId: 5, primaryDestination: "milano", title: "Tennis a Milano" });
+    const hofj = fakeHofjClient({ "terrarossa.com": [elsewhere] });
+
+    const { candidates, locationMatched } = await searchCandidates(hofj, { ...baseSlots, city: "Corso Smeralda" });
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.productId).toBe(5);
+    expect(locationMatched).toBe(false);
+  });
+
+  it("locationMatched is false when no city was given at all", async () => {
+    const anywhere = product({ productId: 6 });
+    const hofj = fakeHofjClient({ "terrarossa.com": [anywhere] });
+
+    const { candidates, locationMatched } = await searchCandidates(hofj, { ...baseSlots, city: null });
+    expect(candidates).toHaveLength(1);
+    expect(locationMatched).toBe(false);
   });
 
   it("tries a preferences-enriched keyword first, falls back to plain city+sport if that returns nothing", async () => {
@@ -145,13 +182,13 @@ describe("searchCandidates", () => {
     }));
     const hofj = { search } as unknown as HofjClient;
 
-    const results = await searchCandidates(hofj, {
+    const { candidates } = await searchCandidates(hofj, {
       ...baseSlots,
       city: "Roma",
       preferences: "bravo insegnante",
     });
 
-    expect(results).toHaveLength(1);
+    expect(candidates).toHaveLength(1);
     expect(search).toHaveBeenCalledTimes(2); // enriched attempt, then plain fallback
     expect(search.mock.calls[0]![0].keyword).toContain("bravo insegnante");
     expect(search.mock.calls[1]![0].keyword).not.toContain("bravo insegnante");
@@ -168,7 +205,7 @@ describe("searchCandidates", () => {
 
   it("does not fall back to Weebora for tennis", async () => {
     const hofj = fakeHofjClient({ "terrarossa.com": [], "weebora.com": [product({ productId: 9 })] });
-    const results = await searchCandidates(hofj, { ...baseSlots, sport: "tennis" });
-    expect(results).toHaveLength(0);
+    const { candidates } = await searchCandidates(hofj, { ...baseSlots, sport: "tennis" });
+    expect(candidates).toHaveLength(0);
   });
 });

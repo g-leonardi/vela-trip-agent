@@ -371,6 +371,45 @@ matching testuale può azzerare risultati validi tanto quanto affinarli)
 ripiega sulla ricerca semplice città+sport — stesso pattern di degradazione
 già usato per il fallback Weebora sul padel.
 
+### La stessa policy applicata alla città, dopo che Giuseppe ha rimesso in discussione la sessione del bug originale (2026-09-15 ~16:05)
+
+Tornando sulla conversazione del primo bug (sessionId salvato in
+`/agent-log/`), Giuseppe ha notato che non aveva mai detto una città reale
+— e ha fatto una domanda diretta: con richieste così generiche, il sistema
+dovrebbe comunque convergere verso "il miglior insegnante", o è lui a
+forzare la mano con prompt troppo vaghi? Risposta: no, non stava forzando
+niente — era la stessa policy già dettata (budget/persone mai decisi,
+località/date/insegnante sì) applicata coerentemente solo a metà. La città
+aveva ricevuto lo stesso trattamento rigido delle date PRIMA della
+correzione: nessun meccanismo di "vago ma va bene così, propongo e
+dichiaro" — solo una domanda che si ripeteva.
+
+Due correzioni, entrambe verificate dal vivo su una conversazione reale
+(niente città data, sport+budget+data+insegnante sì):
+
+1. **`searchCandidates` ora restituisce anche `locationMatched: boolean`**,
+   non solo la lista di candidati. Quando manca una città o quella data non
+   combacia con niente, invece di svuotare la lista (che spingerebbe
+   `classify()` verso "nessuna corrispondenza, chiedo chiarimento") si
+   ripiega sui migliori risultati non filtrati, e `classify()` lo trasforma
+   in un compromesso esplicito `location_unspecified` — stessa disciplina
+   del `date_unspecified`, mai una scelta silenziosa.
+2. **Loop-breaker generale nello stage "collecting"**: dopo 2 tentativi
+   consecutivi bloccati sulla città, il sistema smette di richiedere
+   precisione e propone comunque, lasciando che sia `location_unspecified`
+   a dichiarare la scelta fatta. Deliberatamente **non** applicato a
+   budget/`adults`: quei due restano sempre chiesti esplicitamente, mai
+   bypassati — è la stessa linea netta della policy di Giuseppe, applicata
+   solo dove lui l'ha voluta.
+
+Risultato verificato dal vivo sulla conversazione di test: partendo da
+"voglio il miglior insegnante che c'è in giro" senza mai nominare una
+città, dopo due tentativi il sistema ha proposto da solo l'Exclusive Padel
+Clinic con Ramiro Choya & Vinicius a Milano — un istruttore nominato per
+nome, non un default generico — dichiarando esplicitamente "ti va bene
+Milano, o preferisci un'altra città?". Esattamente il comportamento
+descritto da Giuseppe.
+
 **Verifica dal vivo della ri-verifica silenziosa** (proprio il meccanismo
 richiesto dal brief): nel primo test end-to-end, il prezzo mostrato in fase
 di ricerca (365€, solo l'attività tennis) differiva dal totale reale del

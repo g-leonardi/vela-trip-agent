@@ -158,6 +158,10 @@ function directiveToInstruction(d: SayDirective): string {
       if (c.kind === "date_unspecified") {
         return `${base} Il viaggiatore non ha dato una data precisa (ha detto qualcosa di vago tipo un periodo o un mese). Diglielo con naturalezza — non è un problema, hai semplicemente scelto per lui la prima disponibilità utile, il ${c.offered} — e chiedi conferma o se preferisce specificare un'altra data.`;
       }
+      if (c.kind === "location_unspecified") {
+        const askedFor = c.requested ? `aveva detto "${c.requested}" (non abbastanza preciso per trovare qualcosa lì)` : "non ha specificato una città o zona precisa";
+        return `${base} Il viaggiatore ${askedFor}. Hai scelto tu ${candidate.city} come destinazione — diglielo con naturalezza, non è un problema, e chiedi conferma o se preferisce indicare un'altra città.`;
+      }
       return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
     }
     case "ask_traveller_field": {

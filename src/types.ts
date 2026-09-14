@@ -91,7 +91,9 @@ export interface ProposalContext {
    * one that didn't fit the candidate's window — different enough to
    * phrase differently ("ti propongo il primo slot libero" vs "non riesco
    * al giorno X, riesco al Y"). `requested` is empty for that case. */
-  compromise: { kind: "price" | "date" | "date_unspecified"; requested: string; offered: string } | null;
+  compromise:
+    | { kind: "price" | "date" | "date_unspecified" | "location_unspecified"; requested: string; offered: string }
+    | null;
 }
 
 export interface ChatMessage {
@@ -111,4 +113,9 @@ export interface ConversationState {
   totalPrice: { amount: string; currency: string } | null;
   reservationCode: string | null;
   failureReason: string | null;
+  /** Consecutive turns spent stuck in "collecting" without resolving every
+   * required slot. Only city ever gets bypassed once this crosses a
+   * threshold (see conversation.ts) — budget and party size are never
+   * silently skipped, that line was drawn explicitly and stays hard. */
+  collectingAttempts: number;
 }

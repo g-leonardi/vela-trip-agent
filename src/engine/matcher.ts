@@ -27,8 +27,18 @@ function daysBetween(a: string, b: string): number {
 
 /** Deterministic, auditable match classification — no invented numeric
  * scores. Business logic lives here so it can be unit-tested without the
- * AI binding; the AI's job is only to phrase the result (see engine/ai.ts). */
-export function classify(slots: Slots, candidates: SearchProduct[], rejectedProductIds: string[]): ProposalContext | null {
+ * AI binding; the AI's job is only to phrase the result (see engine/ai.ts).
+ * `locationMatched` (from searchCandidates) is false when the proposal is
+ * in a city the traveller didn't specifically ask for — either because
+ * they never gave one, or gave one nothing matched — which always gets
+ * flagged as a compromise, same policy as an unspecified date: the agent
+ * may decide, but never silently. */
+export function classify(
+  slots: Slots,
+  candidates: SearchProduct[],
+  rejectedProductIds: string[],
+  locationMatched: boolean,
+): ProposalContext | null {
   const pool = candidates.filter((c) => !rejectedProductIds.includes(String(c.productId)));
   if (pool.length === 0) return null;
 
@@ -50,6 +60,11 @@ export function classify(slots: Slots, candidates: SearchProduct[], rejectedProd
         offered: `${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}`,
       };
     }
+  }
+
+  if (!locationMatched && category !== "compromise") {
+    category = "compromise";
+    compromise = { kind: "location_unspecified", requested: slots.city ?? "", offered: candidate.city };
   }
 
   if (slots.dateFrom !== null) {
@@ -134,36 +149,63 @@ function filterToMatchingCity(slots: Slots, candidates: SearchProduct[]): Search
 
 const FALLBACK_BRAND = "weebora.com";
 
-/** Searches one brand, preferring a preferences-enriched keyword but
- * falling back to city+sport alone if that returns nothing after city
- * filtering — same "try the sharper query, degrade gracefully" shape as
- * the cross-brand padel fallback below. */
-async function searchOneBrand(hofj: HofjClient, slots: Slots, brand?: string): Promise<SearchProduct[]> {
+/** Raw search for one brand: tries a preferences-enriched keyword first,
+ * falls back to city+sport alone if that returns nothing. No city
+ * filtering here — that decision belongs to the caller, which needs to
+ * know whether filtering actually found something or not. */
+async function rawSearchOneBrand(hofj: HofjClient, slots: Slots, brand?: string): Promise<SearchProduct[]> {
   if (slots.preferences) {
     const withPrefs = await hofj.search({ keyword: buildKeyword(slots, true), topN: 15, brand });
-    const matched = filterToMatchingCity(slots, withPrefs.data.products);
-    if (matched.length > 0) return matched;
+    if (withPrefs.data.products.length > 0) return withPrefs.data.products;
   }
   const plain = await hofj.search({ keyword: buildKeyword(slots, false) || undefined, topN: 15, brand });
-  return filterToMatchingCity(slots, plain.data.products);
+  return plain.data.products;
+}
+
+export interface SearchResult {
+  candidates: SearchProduct[];
+  /** False whenever the proposal is going to be in a city the traveller
+   * didn't specifically confirm — no city given at all, or one given that
+   * matched nothing. classify() turns this into an explicit compromise
+   * rather than a silent substitution. */
+  locationMatched: boolean;
 }
 
 /** Resolves slots to a ranked candidate list. Terrarossa is the tennis/padel
  * brand of record; when the traveller asked for padel specifically and
  * Terrarossa comes up empty, we also check Weebora, which carries its own
- * padel inventory (verified 2026-09-14, see ARCHITECTURE.md). */
-export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<SearchProduct[]> {
+ * padel inventory (verified 2026-09-14, see ARCHITECTURE.md).
+ *
+ * City, like date, can be genuinely vague ("Nord Europa", or never given —
+ * verified live with a real user request for "il miglior insegnante...
+ * in Nord Europa" with no specific city at all). A city that's given but
+ * matches nothing is treated the same as no city: rather than returning
+ * empty and forcing classify() into "no match, ask a clarifying question"
+ * — which is what a *literal* wrong-city venue outranking the right one
+ * warranted (see the Forte dei Marmi case, still filtered out above) — we
+ * fall back to the best unfiltered results and let classify() flag it as
+ * a disclosed compromise, consistent with the policy that location may be
+ * decided by the agent but never silently. */
+export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<SearchResult> {
   // Date is deliberately NOT passed as a hard filter: a near-miss product
   // (available in a different week) is exactly the "compromise" case the
   // dialogue should be able to offer, not silently drop. classify() does
   // the date comparison itself once we have the ranked candidates.
-  const primaryMatched = await searchOneBrand(hofj, slots);
-  if (primaryMatched.length > 0) return primaryMatched;
-
-  if (slots.sport === "padel") {
-    const fallbackMatched = await searchOneBrand(hofj, slots, FALLBACK_BRAND);
-    if (fallbackMatched.length > 0) return fallbackMatched;
+  const primaryRaw = await rawSearchOneBrand(hofj, slots);
+  if (slots.city) {
+    const filtered = filterToMatchingCity(slots, primaryRaw);
+    if (filtered.length > 0) return { candidates: filtered, locationMatched: true };
   }
 
-  return [];
+  if (slots.sport === "padel") {
+    const fallbackRaw = await rawSearchOneBrand(hofj, slots, FALLBACK_BRAND);
+    if (slots.city) {
+      const filtered = filterToMatchingCity(slots, fallbackRaw);
+      if (filtered.length > 0) return { candidates: filtered, locationMatched: true };
+    }
+    const best = fallbackRaw.length > 0 ? fallbackRaw : primaryRaw;
+    return { candidates: best, locationMatched: false };
+  }
+
+  return { candidates: primaryRaw, locationMatched: false };
 }

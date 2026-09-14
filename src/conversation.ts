@@ -23,6 +23,7 @@ const REQUIRED_TRIP_SLOTS: (keyof Pick<Slots, "sport" | "city" | "dateFrom" | "b
 const REQUIRED_TRAVELLER_FIELDS: (keyof TravellerInfo)[] = ["firstName", "lastName", "email", "phone", "city"];
 
 const PRICE_CHANGE_TOLERANCE = 0.01; // 1% — floating point / rounding noise only
+const COLLECTING_LOOP_BREAKER = 2; // consecutive stuck turns before city gets bypassed
 
 function initialState(): ConversationState {
   return {
@@ -36,6 +37,7 @@ function initialState(): ConversationState {
     totalPrice: null,
     reservationCode: null,
     failureReason: null,
+    collectingAttempts: 0,
   };
 }
 
@@ -194,19 +196,32 @@ export class ConversationDO extends DurableObject<Env> {
     if (missing === "dateFrom" && vagueDateHeard) {
       return this.searchAndPropose(state);
     }
+    // General loop-breaker: after enough turns stuck in "collecting"
+    // (live regression: a real user got stuck 10+ turns because "city"
+    // kept capturing something unsearchable), stop re-asking about city
+    // specifically and let searchCandidates/classify's location_unspecified
+    // compromise take over — propose somewhere, disclosed, rather than
+    // interrogate indefinitely. Budget and adults are deliberately exempt:
+    // those are never bypassed, only ever asked, per explicit policy (see
+    // ARCHITECTURE.md, "mai un default onesto per queste due").
+    if (missing === "city" && state.collectingAttempts >= COLLECTING_LOOP_BREAKER) {
+      return this.searchAndPropose(state);
+    }
     if (missing) {
+      state.collectingAttempts += 1;
       return say(this.env, { kind: "ask_slot", missing });
     }
     return this.searchAndPropose(state);
   }
 
   private async searchAndPropose(state: ConversationState): Promise<string> {
-    const candidates = await searchCandidates(this.hofj, state.slots);
-    const ctx = classify(state.slots, candidates, state.rejectedProductIds);
+    const { candidates, locationMatched } = await searchCandidates(this.hofj, state.slots);
+    const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
       state.stage = "collecting";
       return say(this.env, { kind: "no_match" });
     }
+    state.collectingAttempts = 0;
     state.proposal = ctx;
     state.stage = "proposing";
     return say(this.env, { kind: "propose", ctx });
