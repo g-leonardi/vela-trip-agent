@@ -23,7 +23,8 @@ const REQUIRED_TRIP_SLOTS: (keyof Pick<Slots, "sport" | "city" | "dateFrom" | "b
 const REQUIRED_TRAVELLER_FIELDS: (keyof TravellerInfo)[] = ["firstName", "lastName", "email", "phone", "city"];
 
 const PRICE_CHANGE_TOLERANCE = 0.01; // 1% — floating point / rounding noise only
-const COLLECTING_LOOP_BREAKER = 2; // consecutive stuck turns before city gets bypassed
+const CITY_LOOP_BREAKER = 2; // consecutive stuck turns before city gets bypassed
+const BUDGET_LOOP_BREAKER = 1; // ask once; if still unanswered next time, decide (cheapest) and disclose it
 
 function initialState(): ConversationState {
   return {
@@ -37,7 +38,8 @@ function initialState(): ConversationState {
     totalPrice: null,
     reservationCode: null,
     failureReason: null,
-    collectingAttempts: 0,
+    cityAskAttempts: 0,
+    budgetAskAttempts: 0,
   };
 }
 
@@ -128,13 +130,19 @@ export class ConversationDO extends DurableObject<Env> {
       // di novembre") — worth telling them that, instead of silently
       // re-asking the same generic question, which reads as "didn't hear
       // you" when it actually did (regression: live user hit exactly this
-      // with vague month-only answers, repeated 3+ times).
-      const vagueDateHeard =
-        typeof dateFromText === "string" && resolvedDates.dateFrom === null ? dateFromText : null;
+      // with vague month-only answers, repeated 3+ times). Persisted on
+      // the slots themselves (not a local variable) so it survives to a
+      // *later* turn when dateFrom next becomes the missing slot — a
+      // second regression found reading this code: the traveller can
+      // volunteer a vague date on a turn where city, not date, is what's
+      // being asked about, and that signal was being silently dropped.
+      if (typeof dateFromText === "string") {
+        state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+      }
 
       switch (state.stage) {
         case "collecting":
-          reply = await this.runCollecting(state, vagueDateHeard);
+          reply = await this.runCollecting(state);
           break;
         case "proposing":
           reply = await this.runProposing(state, interpretation.decision);
@@ -177,39 +185,44 @@ export class ConversationDO extends DurableObject<Env> {
     return "Mi dispiace, ho un problema tecnico interno e non posso continuare questa conversazione. Riprova più tardi aprendone una nuova.";
   }
 
-  private firstMissingTripSlot(slots: Slots): (typeof REQUIRED_TRIP_SLOTS)[number] | null {
-    for (const key of REQUIRED_TRIP_SLOTS) {
-      if (slots[key] === null) return key;
+  /** Is this required slot resolved enough to stop gating the search?
+   * "Resolved" isn't only "has a literal value" — city and dateFrom can
+   * also be satisfied by giving up on precision (a persisted vague date,
+   * or enough failed city asks), and budget the same way once it's had
+   * its one ask. adults is the deliberate exception: only a real value
+   * counts, ever — see ARCHITECTURE.md, Giuseppe's explicit line that
+   * budget and party size are the two that are never decided for the
+   * traveller. (Budget itself moved off that hard line in a later
+   * revision — adults is now the only one still on it.) */
+  private isGatingSatisfied(state: ConversationState, key: (typeof REQUIRED_TRIP_SLOTS)[number]): boolean {
+    switch (key) {
+      case "dateFrom":
+        return state.slots.dateFrom !== null || state.slots.dateFromVague !== null;
+      case "city":
+        return state.slots.city !== null || state.cityAskAttempts >= CITY_LOOP_BREAKER;
+      case "budget":
+        return state.slots.budget !== null || state.slots.budgetTier !== null || state.budgetAskAttempts >= BUDGET_LOOP_BREAKER;
+      default:
+        return state.slots[key] !== null;
     }
-    return null;
   }
 
-  private async runCollecting(state: ConversationState, vagueDateHeard: string | null = null): Promise<string> {
-    const missing = this.firstMissingTripSlot(state.slots);
-    // A vague date answer ("un weekend a novembre") still counts as an
-    // answer: don't keep re-asking for precision the traveller may not
-    // have. classify()'s date_unspecified compromise turns straight into
-    // a concrete proposal ("non hai una data precisa? ti propongo il primo
-    // slot libero, il 9 ottobre") — that message does double duty as both
-    // acknowledgment and offer, which is a better turn than "let me ask
-    // again" followed by a search on some later turn.
-    if (missing === "dateFrom" && vagueDateHeard) {
-      return this.searchAndPropose(state);
-    }
-    // General loop-breaker: after enough turns stuck in "collecting"
-    // (live regression: a real user got stuck 10+ turns because "city"
-    // kept capturing something unsearchable), stop re-asking about city
-    // specifically and let searchCandidates/classify's location_unspecified
-    // compromise take over — propose somewhere, disclosed, rather than
-    // interrogate indefinitely. Budget and adults are deliberately exempt:
-    // those are never bypassed, only ever asked, per explicit policy (see
-    // ARCHITECTURE.md, "mai un default onesto per queste due").
-    if (missing === "city" && state.collectingAttempts >= COLLECTING_LOOP_BREAKER) {
-      return this.searchAndPropose(state);
-    }
-    if (missing) {
-      state.collectingAttempts += 1;
-      return say(this.env, { kind: "ask_slot", missing });
+  private async runCollecting(state: ConversationState): Promise<string> {
+    // Walk the required slots in order and ask about the first one that
+    // isn't gating-satisfied yet. Critically, a bypass on one slot (e.g. a
+    // vague date accepted) does NOT jump straight to search — it only
+    // clears that one slot's gate, so a still-missing, never-bypassable
+    // slot further down the list (adults) still gets asked. An earlier
+    // version of this function short-circuited straight to
+    // searchAndPropose() on any bypass, which silently skipped asking
+    // about adults whenever it happened to come after a bypassed slot —
+    // found reading the code, not guessed: verified live that a
+    // conversation reached "proposing" with adults still null.
+    for (const key of REQUIRED_TRIP_SLOTS) {
+      if (this.isGatingSatisfied(state, key)) continue;
+      if (key === "city") state.cityAskAttempts += 1;
+      if (key === "budget") state.budgetAskAttempts += 1;
+      return say(this.env, { kind: "ask_slot", missing: key });
     }
     return this.searchAndPropose(state);
   }
@@ -221,7 +234,8 @@ export class ConversationDO extends DurableObject<Env> {
       state.stage = "collecting";
       return say(this.env, { kind: "no_match" });
     }
-    state.collectingAttempts = 0;
+    state.cityAskAttempts = 0;
+    state.budgetAskAttempts = 0;
     state.proposal = ctx;
     state.stage = "proposing";
     return say(this.env, { kind: "propose", ctx });
@@ -237,6 +251,7 @@ export class ConversationDO extends DurableObject<Env> {
       // traveller actually gave.
       if (state.slots.dateFrom === null) {
         state.slots.dateFrom = state.proposal.candidate.minDate;
+        state.slots.dateFromVague = null;
       }
       state.stage = "collecting_traveller";
       // Traveller info may already be filled from an earlier attempt (e.g.

@@ -51,7 +51,7 @@ describe("classify", () => {
   });
 
   it("classifies as compromise when the requested date is outside the product window but close", () => {
-    const slots: Slots = { ...baseSlots, dateFrom: "2026-08-20" }; // 12 days before minDate
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-08-20" }; // 12 days before minDate
     const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("date");
@@ -59,7 +59,7 @@ describe("classify", () => {
   });
 
   it("returns null when the nearest available date is too far from what was requested", () => {
-    const slots: Slots = { ...baseSlots, dateFrom: "2026-01-01" }; // months before minDate
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-01-01" }; // months before minDate
     const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);
     expect(result).toBeNull();
   });
@@ -107,6 +107,47 @@ describe("classify", () => {
     const result = classify(slots, [product({ price: 465 })], [], false);
     expect(result?.category).toBe("compromise");
     expect(result?.compromise?.kind).toBe("price");
+  });
+
+  it("proposes the cheapest relevant candidate and flags budget_unspecified when budget was never mentioned at all (regression: budget used to block forever if never given)", () => {
+    const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25" }; // no budget, no budgetTier
+    const cheap = product({ productId: 1, price: 150 });
+    const pricier = product({ productId: 2, price: 400 });
+    // API ranking (relevance) puts the pricier one first — cheapest
+    // selection must override that ranking, not just filter it.
+    const result = classify(slots, [pricier, cheap], [], true);
+    expect(result?.category).toBe("compromise");
+    expect(result?.candidate.productId).toBe("1");
+    expect(result?.compromise).toEqual({ kind: "budget_unspecified", requested: "", offered: "150€" });
+  });
+
+  it("budgetTier 'low' selects the cheapest candidate too, but as an exact match — the traveller did answer, just qualitatively", () => {
+    const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25", budgetTier: "low" as const };
+    const cheap = product({ productId: 1, price: 150 });
+    const pricier = product({ productId: 2, price: 400 });
+    const result = classify(slots, [pricier, cheap], [], true);
+    expect(result?.candidate.productId).toBe("1");
+    expect(result?.category).toBe("exact");
+    expect(result?.compromise).toBeNull();
+  });
+
+  it("budgetTier 'high' keeps the default (top-ranked) selection and is never flagged as a budget compromise", () => {
+    const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25", budgetTier: "high" as const };
+    const topRanked = product({ productId: 1, price: 900 });
+    const cheaper = product({ productId: 2, price: 150 });
+    const result = classify(slots, [topRanked, cheaper], [], true);
+    expect(result?.candidate.productId).toBe("1"); // stays top-ranked, not forced cheapest
+    expect(result?.category).toBe("exact");
+    expect(result?.compromise).toBeNull();
+  });
+
+  it("a real numeric budget always overrides budgetTier-driven cheapest-selection", () => {
+    const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25", budget: 1000 };
+    const topRanked = product({ productId: 1, price: 900 });
+    const cheaper = product({ productId: 2, price: 150 });
+    const result = classify(slots, [topRanked, cheaper], [], true);
+    expect(result?.candidate.productId).toBe("1");
+    expect(result?.category).toBe("exact");
   });
 });
 

@@ -42,7 +42,15 @@ export function classify(
   const pool = candidates.filter((c) => !rejectedProductIds.includes(String(c.productId)));
   if (pool.length === 0) return null;
 
-  const best = pool[0]!;
+  // Which candidate to propose: normally the API's own top-ranked
+  // (relevance/combinedScore) result. When the traveller wants cheap —
+  // either because they never gave a budget at all, or said so
+  // qualitatively ("economico") — relevance ranking isn't the right
+  // tiebreaker for something being chosen FOR them; pick the cheapest in
+  // the pool instead, so any disclosed compromise is honest about what
+  // "cheapest" actually means rather than an arbitrary ranking artifact.
+  const wantsCheapest = slots.budget === null && slots.budgetTier !== "high";
+  const best = wantsCheapest ? pool.reduce((min, c) => (c.price < min.price ? c : min), pool[0]!) : pool[0]!;
   const candidate = toCandidate(best);
 
   let category: ConfidenceCategory = "exact";
@@ -60,6 +68,20 @@ export function classify(
         offered: `${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}`,
       };
     }
+  } else if (slots.budgetTier === null) {
+    // Never mentioned budget at all, not even qualitatively — same
+    // discipline as date_unspecified: propose the cheapest relevant
+    // option, but always as a disclosed compromise, never silently.
+    category = "compromise";
+    compromise = {
+      kind: "budget_unspecified",
+      requested: "",
+      offered: `${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}`,
+    };
+    // budgetTier "low"/"high" with no numeric budget: an explicit
+    // qualitative answer was given and is satisfied by construction
+    // (cheapest selected above for "low", default relevance ranking for
+    // "high") — no compromise needed for the budget dimension itself.
   }
 
   if (!locationMatched && category !== "compromise") {

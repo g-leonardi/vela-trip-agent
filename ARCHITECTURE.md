@@ -338,10 +338,17 @@ budget, insegnanti/attività, numero di persone), e quando è l'agente a
 dover decidere al posto loro dato che prenota per davvero? Regola esplicita
 data da Giuseppe, non dedotta da me:
 
-- **Budget e numero di persone (`adults`) non si decidono mai.** Se non
-  detti esplicitamente, si chiedono — punto. Non c'è un default onesto per
-  "quante persone" o "quanto vuoi spendere": inventarlo significherebbe
-  prenotare/pagare qualcosa che il viaggiatore non ha davvero autorizzato.
+- **Budget e numero di persone (`adults`) non si decidono mai — inventando
+  un numero specifico.** Se non detti esplicitamente, si chiedono. Non c'è
+  un default onesto per "quante persone" o "quanto vuoi spendere":
+  inventare un NUMERO significherebbe prenotare/pagare qualcosa che il
+  viaggiatore non ha davvero autorizzato. *(Nota aggiunta il 2026-09-15
+  dopo una revisione della policy da parte di Giuseppe: il budget ha poi
+  ricevuto lo stesso trattamento di città/data — se non menzionato affatto
+  dopo un tentativo di chiederlo, si cerca senza vincolo e si propone il
+  più economico, dichiarato esplicitamente come compromesso. La riga dura
+  resta: mai un NUMERO inventato. `adults` resta l'unico campo senza
+  eccezioni, mai bypassato in nessun caso — vedi la sezione più sotto.)*
 - **Località, date, insegnante/attività possono essere vaghi**: l'agente,
   che prenota per davvero, deve poter decidere lui quando serve — ma
   SEMPRE con una proposta esplicita da confermare, mai come tabella di
@@ -398,9 +405,10 @@ Due correzioni, entrambe verificate dal vivo su una conversazione reale
    consecutivi bloccati sulla città, il sistema smette di richiedere
    precisione e propone comunque, lasciando che sia `location_unspecified`
    a dichiarare la scelta fatta. Deliberatamente **non** applicato a
-   budget/`adults`: quei due restano sempre chiesti esplicitamente, mai
-   bypassati — è la stessa linea netta della policy di Giuseppe, applicata
-   solo dove lui l'ha voluta.
+   `adults`: quello resta sempre chiesto esplicitamente, mai bypassato —
+   è la stessa linea netta della policy di Giuseppe, applicata solo dove
+   lui l'ha voluta. (Budget ha poi ricevuto lo stesso trattamento di
+   città in una revisione successiva — vedi sotto.)
 
 Risultato verificato dal vivo sulla conversazione di test: partendo da
 "voglio il miglior insegnante che c'è in giro" senza mai nominare una
@@ -409,6 +417,65 @@ Clinic con Ramiro Choya & Vinicius a Milano — un istruttore nominato per
 nome, non un default generico — dichiarando esplicitamente "ti va bene
 Milano, o preferisci un'altra città?". Esattamente il comportamento
 descritto da Giuseppe.
+
+### Due bug trovati da Giuseppe leggendo il codice (non ipotesi), e la stessa policy estesa al budget (2026-09-15 ~16:20)
+
+Giuseppe ha riletto `conversation.ts`/`engine/ai.ts` riga per riga e trovato
+due problemi reali, senza bisogno di riprodurli prima dal vivo:
+
+1. **Il segnale "data vaga" non sopravviveva tra i turni.** `vagueDateHeard`
+   veniva ricalcolato ogni turno solo dal messaggio corrente e passato come
+   parametro locale a `runCollecting`. Se il viaggiatore dava una data vaga
+   in un turno in cui non era ancora il momento di chiederla (perché
+   mancava prima la città), il segnale spariva — quando la data tornava a
+   essere lo slot mancante, veniva richiesta da zero. **Corretto**:
+   `slots.dateFromVague` è ora un campo persistito sullo stato (non un
+   parametro locale), scritto quando emerge una frase di data non
+   risolvibile e letto ogni volta che `dateFrom` torna a essere lo slot
+   mancante, indipendentemente da quando è stata pronunciata. Verificato
+   dal vivo: data vaga detta mentre si chiedeva la città → città data due
+   turni dopo → il sistema usa comunque la data vaga persistita.
+2. **Budget troppo rigido**: bloccava per sempre se mai detto, e non
+   riconosceva risposte qualitative ("economico", "il top"). Estesa la
+   stessa policy già costruita per `date_unspecified`/`location_unspecified`:
+   - Nuovo campo `slots.budgetTier: "low"|"high"|null`, riconosciuto da
+     `interpret()` per risposte qualitative — "economico"/"il minimo" →
+     `"low"`, "il top"/"budget illimitato" → `"high"`. Resta vietato
+     inventare un numero: se non viene dato né un numero né un giudizio
+     qualitativo, entrambi i campi restano `null`.
+   - Nuovo compromesso `budget_unspecified` (simmetrico a
+     `date_unspecified`): se il budget non è mai stato menzionato dopo un
+     solo tentativo di chiederlo, si cerca senza vincolo di prezzo e si
+     propone il candidato più economico tra i pertinenti, dichiarato
+     esplicitamente ("non mi hai detto un budget, ti propongo il più
+     economico, X€, procedo?").
+   - `budgetTier: "low"` seleziona anch'esso il candidato più economico,
+     ma come risposta **esatta** (non un compromesso: il viaggiatore ha
+     risposto davvero, solo in modo qualitativo) — la differenza è la
+     dichiarazione, non il candidato scelto. `budgetTier: "high"` lascia
+     la selezione di default (il più rilevante secondo il ranking
+     dell'API), coerente con "senza badare a spese".
+   - Verificato dal vivo tutti e tre i casi: "budget economico, niente di
+     esagerato" → `budgetTier: "low"`, categoria "exact"; "voglio il top,
+     budget illimitato" → `budgetTier: "high"`; nessun budget menzionato
+     dopo un tentativo → `budget_unspecified` con il candidato più
+     economico.
+
+**Un terzo bug, più serio, trovato verificando dal vivo il primo fix**: i
+tre meccanismi di bypass (data vaga, città dopo N tentativi, budget dopo 1
+tentativo) chiamavano tutti direttamente `searchAndPropose()`, saltando
+qualunque slot **successivo** nell'ordine di priorità — compreso `adults`,
+l'unico che non deve MAI essere bypassato. Riprodotto dal vivo: data vaga
+detta per prima, poi città data → il sistema è saltato dritto a una
+proposta con `adults: null`, senza averlo mai chiesto. Violazione diretta
+della regola più esplicita di tutte. **Corretto**: `runCollecting` non
+usa più bypass puntuali indipendenti — scorre `REQUIRED_TRIP_SLOTS` in
+ordine e si ferma al primo slot che non è "gating-satisfied" (valore reale
+OPPURE bypass legittimo per quello slot specifico); `adults` non ha mai un
+bypass legittimo, quindi continua a bloccare finché non viene dato un
+numero vero, qualunque cosa succeda prima nell'ordine. Verificato dal vivo
+dopo la correzione: stessa sequenza (data vaga → città), questa volta il
+sistema chiede correttamente budget e poi adults prima di proporre.
 
 **Verifica dal vivo della ri-verifica silenziosa** (proprio il meccanismo
 richiesto dal brief): nel primo test end-to-end, il prezzo mostrato in fase

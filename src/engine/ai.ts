@@ -81,7 +81,10 @@ async function chat(env: Env, system: string, user: string): Promise<string> {
 }
 
 interface RawInterpretation {
-  slotUpdates: Partial<Omit<Slots, "dateFrom" | "dateTo">> & { dateFromText?: string | null; dateToText?: string | null };
+  slotUpdates: Partial<Omit<Slots, "dateFrom" | "dateTo" | "dateFromVague">> & {
+    dateFromText?: string | null;
+    dateToText?: string | null;
+  };
   travellerUpdates: Partial<TravellerInfo>;
   decision: "yes" | "no" | "unclear";
 }
@@ -90,14 +93,15 @@ const INTERPRET_SYSTEM = `Sei il modulo di comprensione di un agente di prenotaz
 Ricevi l'ultimo messaggio del viaggiatore e lo stato attuale noto. Estrai SOLO ciò che è esplicitamente detto o chiaramente implicito, senza inventare.
 Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo, con questa forma esatta:
 {
-  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "adults": number|null, "preferences": string|null },
+  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "budgetTier": "low"|"high"|null, "adults": number|null, "preferences": string|null },
   "travellerUpdates": { "firstName": string|null, "lastName": string|null, "email": string|null, "phone": string|null, "city": string|null, "postalCode": string|null, "countryCode": string|null },
   "decision": "yes"|"no"|"unclear"
 }
 Regole:
 - Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; i campi non menzionati restano null.
 - "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore (es. "il 25 settembre", "il prossimo weekend", "tra due settimane", "domani") — NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico.
-- "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente, altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
+- "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
+- "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco" → "low". Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
 - "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".`;
 
 export async function interpret(
@@ -161,6 +165,9 @@ function directiveToInstruction(d: SayDirective): string {
       if (c.kind === "location_unspecified") {
         const askedFor = c.requested ? `aveva detto "${c.requested}" (non abbastanza preciso per trovare qualcosa lì)` : "non ha specificato una città o zona precisa";
         return `${base} Il viaggiatore ${askedFor}. Hai scelto tu ${candidate.city} come destinazione — diglielo con naturalezza, non è un problema, e chiedi conferma o se preferisce indicare un'altra città.`;
+      }
+      if (c.kind === "budget_unspecified") {
+        return `${base} Il viaggiatore non ti ha mai detto un budget. Diglielo con naturalezza — non è un problema, hai scelto tu il pacchetto più economico tra quelli pertinenti, a ${c.offered} — e chiedi conferma o se preferisce dirti un budget preciso.`;
       }
       return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
     }

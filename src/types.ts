@@ -17,9 +17,23 @@ export interface Slots {
   city: string | null;
   dateFrom: string | null; // YYYY-MM-DD, requested start
   dateTo: string | null; // YYYY-MM-DD, requested end (optional, inferred from product duration if absent)
+  /** A date phrase heard but not yet resolved to a specific day (e.g. "nei
+   * prossimi tre mesi") — persisted across turns so the signal survives
+   * even when dateFrom isn't the slot being asked about *this* turn (e.g.
+   * the traveller volunteers a vague date while city is still missing).
+   * Checked whenever dateFrom next becomes the missing slot, not only in
+   * the turn it was said. Cleared once a real dateFrom is resolved. */
+  dateFromVague: string | null;
   budget: number | null; // EUR, total for the trip
-  /** Party size. Unlike city/date, this is never inferred or defaulted —
-   * the traveller must state it explicitly, same as budget. See
+  /** A qualitative budget answer ("economico"/"il top") that doesn't map
+   * to a number — a real answer, not a missing one, so it must not be
+   * treated as budget_unspecified. "low" biases selection toward the
+   * cheapest relevant candidate; "high" means no ceiling, keep the
+   * default (most relevant) selection. Mutually exclusive with `budget`
+   * in practice: interpret() sets one or the other. */
+  budgetTier: "low" | "high" | null;
+  /** Party size. Unlike city/date/budget, this is never inferred or
+   * defaulted — the traveller must state it explicitly. See
    * ARCHITECTURE.md: precision policy decided 2026-09-15. */
   adults: number | null;
   preferences: string | null; // free text: "maestro", "principiante", "vista mare", ...
@@ -30,7 +44,9 @@ export const EMPTY_SLOTS: Slots = {
   city: null,
   dateFrom: null,
   dateTo: null,
+  dateFromVague: null,
   budget: null,
+  budgetTier: null,
   adults: null,
   preferences: null,
 };
@@ -86,13 +102,18 @@ export interface ProposalContext {
   candidate: Candidate;
   category: ConfidenceCategory;
   /** Set when category === "compromise": what exactly doesn't match.
-   * "date_unspecified" is distinct from "date": the traveller never gave a
-   * specific day at all (e.g. "un weekend a novembre") rather than giving
-   * one that didn't fit the candidate's window — different enough to
-   * phrase differently ("ti propongo il primo slot libero" vs "non riesco
-   * al giorno X, riesco al Y"). `requested` is empty for that case. */
+   * "date_unspecified"/"budget_unspecified" are distinct from "date"/
+   * "price": the traveller never gave one at all (e.g. "un weekend a
+   * novembre", or nothing about budget ever) rather than giving one that
+   * didn't fit — different enough to phrase differently ("ti propongo il
+   * primo slot libero"/"ti propongo il più economico" vs "non riesco a X,
+   * riesco a Y"). `requested` is empty for the "_unspecified" cases. */
   compromise:
-    | { kind: "price" | "date" | "date_unspecified" | "location_unspecified"; requested: string; offered: string }
+    | {
+        kind: "price" | "date" | "date_unspecified" | "location_unspecified" | "budget_unspecified";
+        requested: string;
+        offered: string;
+      }
     | null;
 }
 
@@ -113,9 +134,11 @@ export interface ConversationState {
   totalPrice: { amount: string; currency: string } | null;
   reservationCode: string | null;
   failureReason: string | null;
-  /** Consecutive turns spent stuck in "collecting" without resolving every
-   * required slot. Only city ever gets bypassed once this crosses a
-   * threshold (see conversation.ts) — budget and party size are never
-   * silently skipped, that line was drawn explicitly and stays hard. */
-  collectingAttempts: number;
+  /** How many times each has been asked about without resolving it.
+   * Tracked per-slot (not a single shared counter) so that, e.g., asking
+   * twice about sport doesn't count toward city's own patience budget.
+   * Only city and budget ever get bypassed this way (see conversation.ts)
+   * — party size is never silently skipped, that line stays hard. */
+  cityAskAttempts: number;
+  budgetAskAttempts: number;
 }
