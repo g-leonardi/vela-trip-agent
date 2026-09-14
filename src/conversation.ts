@@ -117,28 +117,46 @@ export class ConversationDO extends DurableObject<Env> {
 
     let reply: string;
     try {
-      const interpretation = await interpret(this.env, state.slots, state.traveller, text);
+      const interpretation = await interpret(this.env, state.slots, state.traveller, text, this.describeCurrentlyAsking(state));
       const { dateFromText, dateToText, ...slotUpdates } = interpretation.slotUpdates as Record<string, unknown>;
-      const resolvedDates: Partial<Slots> = {};
-      if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
-      if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
-      state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
-      state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
 
-      // The traveller said *something* about a date, but it wasn't
-      // specific enough to resolve to one calendar day (e.g. "un weekend
-      // di novembre") — worth telling them that, instead of silently
-      // re-asking the same generic question, which reads as "didn't hear
-      // you" when it actually did (regression: live user hit exactly this
-      // with vague month-only answers, repeated 3+ times). Persisted on
-      // the slots themselves (not a local variable) so it survives to a
-      // *later* turn when dateFrom next becomes the missing slot — a
-      // second regression found reading this code: the traveller can
-      // volunteer a vague date on a turn where city, not date, is what's
-      // being asked about, and that signal was being silently dropped.
-      if (typeof dateFromText === "string") {
-        state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+      // Trip slots (sport/city/dates/budget/...) and traveller fields both
+      // have a "city", and interpret() isn't told which stage we're in —
+      // it has to guess from context alone. Verified live: once the trip
+      // was already confirmed and the dialogue was asking for the
+      // traveller's own city (billing address), a bare answer like
+      // "Milano" got written into BOTH state.traveller.city AND
+      // state.slots.city, silently corrupting the already-confirmed
+      // destination (a real proposal for Lanzarote ended up with
+      // slots.city == "Lecco"). Prompt instructions alone aren't a
+      // reliable enough guard for something this consequential — the trip
+      // is only ever open for renegotiation during "collecting"/
+      // "proposing"; past that point it's locked, so slotUpdates (except
+      // dateFromVague bookkeeping) simply isn't applied at all, regardless
+      // of what the model returned.
+      const tripStillNegotiable = state.stage === "collecting" || state.stage === "proposing";
+      if (tripStillNegotiable) {
+        const resolvedDates: Partial<Slots> = {};
+        if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
+        if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
+        state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
+
+        // The traveller said *something* about a date, but it wasn't
+        // specific enough to resolve to one calendar day (e.g. "un weekend
+        // di novembre") — worth telling them that, instead of silently
+        // re-asking the same generic question, which reads as "didn't hear
+        // you" when it actually did (regression: live user hit exactly this
+        // with vague month-only answers, repeated 3+ times). Persisted on
+        // the slots themselves (not a local variable) so it survives to a
+        // *later* turn when dateFrom next becomes the missing slot — a
+        // second regression found reading this code: the traveller can
+        // volunteer a vague date on a turn where city, not date, is what's
+        // being asked about, and that signal was being silently dropped.
+        if (typeof dateFromText === "string") {
+          state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+        }
       }
+      state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
 
       switch (state.stage) {
         case "collecting":
@@ -185,6 +203,42 @@ export class ConversationDO extends DurableObject<Env> {
     return "Mi dispiace, ho un problema tecnico interno e non posso continuare questa conversazione. Riprova più tardi aprendone una nuova.";
   }
 
+  /** Human-readable description of what the *previous* agent turn was
+   * actually asking about, fed to interpret() so it can disambiguate a
+   * short, context-free answer (e.g. "Milano" alone) — see the
+   * "city" collision doc in engine/ai.ts. Based on state as it stands
+   * before this turn's own updates, i.e. what was truly just asked. */
+  private describeCurrentlyAsking(state: ConversationState): string | null {
+    if (state.stage === "collecting") {
+      const labels: Partial<Record<(typeof REQUIRED_TRIP_SLOTS)[number], string>> = {
+        sport: "che sport vuole praticare",
+        city: "in che città o zona vuole andare in vacanza (la destinazione del viaggio)",
+        dateFrom: "quando vuole partire",
+        budget: "il budget",
+        adults: "in quante persone viaggia",
+      };
+      for (const key of REQUIRED_TRIP_SLOTS) {
+        if (!this.isGatingSatisfied(state, key)) return labels[key] ?? key;
+      }
+      return null;
+    }
+    if (state.stage === "proposing") {
+      return "se conferma o rifiuta la proposta di viaggio appena fatta";
+    }
+    if (state.stage === "collecting_traveller") {
+      const labels: Partial<Record<keyof TravellerInfo, string>> = {
+        firstName: "il nome del viaggiatore",
+        lastName: "il cognome del viaggiatore",
+        email: "l'email del viaggiatore",
+        phone: "il telefono del viaggiatore",
+        city: "la città DI RESIDENZA del viaggiatore, per l'indirizzo di fatturazione — NON la destinazione del viaggio, quella è già decisa",
+      };
+      const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
+      return missing ? (labels[missing] ?? missing) : null;
+    }
+    return null;
+  }
+
   /** Is this required slot resolved enough to stop gating the search?
    * "Resolved" isn't only "has a literal value" — city and dateFrom can
    * also be satisfied by giving up on precision (a persisted vague date,
@@ -227,7 +281,14 @@ export class ConversationDO extends DurableObject<Env> {
     return this.searchAndPropose(state);
   }
 
-  private async searchAndPropose(state: ConversationState): Promise<string> {
+  /** `precededBy` folds a one-line acknowledgment of why we're searching
+   * again into the SAME proposal message ("quel pacchetto non risulta più
+   * disponibile, però ho trovato quest'altro...") instead of a separate
+   * filler turn. */
+  private async searchAndPropose(
+    state: ConversationState,
+    precededBy?: "rejected" | "unavailable",
+  ): Promise<string> {
     const { candidates, locationMatched } = await searchCandidates(this.hofj, state.slots);
     const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
@@ -238,7 +299,7 @@ export class ConversationDO extends DurableObject<Env> {
     state.budgetAskAttempts = 0;
     state.proposal = ctx;
     state.stage = "proposing";
-    return say(this.env, { kind: "propose", ctx });
+    return say(this.env, { kind: "propose", ctx, precededBy });
   }
 
   private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear"): Promise<string> {
@@ -262,16 +323,18 @@ export class ConversationDO extends DurableObject<Env> {
     if (decision === "no" && state.proposal) {
       state.rejectedProductIds.push(state.proposal.candidate.productId);
       state.proposal = null;
+      return this.searchAndPropose(state, "rejected");
     }
-    // "no" -> try the next best candidate; "unclear" -> re-evaluate in case
-    // the traveller changed a slot (budget/date/city) without an explicit yes/no.
+    // "unclear" -> re-evaluate in case the traveller changed a slot
+    // (budget/date/city) without an explicit yes/no.
     return this.searchAndPropose(state);
   }
 
   private async runCollectingTraveller(state: ConversationState): Promise<string> {
     const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
     if (missing) {
-      return say(this.env, { kind: "ask_traveller_field", field: missing });
+      const isFirstAsk = REQUIRED_TRAVELLER_FIELDS.every((f) => state.traveller[f] === null);
+      return say(this.env, { kind: "ask_traveller_field", field: missing, isFirstAsk });
     }
     return this.openRealCartAndAttemptPayment(state);
   }
@@ -332,6 +395,22 @@ export class ConversationDO extends DurableObject<Env> {
           compromise: { kind: "date", requested: requestedDate, offered: candidate.minDate },
         };
         return say(this.env, { kind: "propose", ctx: state.proposal });
+      }
+      // Already on the candidate's own known-good minDate and it *still*
+      // failed: this isn't a date problem, and retrying (the generic
+      // "sistema lento, riprova" path) can never succeed — verified live,
+      // this exact product/date/party-size combo 404ed upstream with
+      // NOT_FOUND_ERROR even though it came back as a normal, well-formed
+      // search result. Exactly the "prodotto non prenotabile" case the
+      // brief warns about, just discovered at booking time instead of
+      // search time. Reject this specific product and look for the next
+      // best candidate instead of asking the traveller to retry something
+      // that will never work.
+      if (err instanceof HofjApiError) {
+        state.rejectedProductIds.push(candidate.productId);
+        state.proposal = null;
+        state.stage = "collecting";
+        return this.searchAndPropose(state, "unavailable");
       }
       throw err;
     }

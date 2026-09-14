@@ -525,6 +525,63 @@ Haiku regge lo stesso identico flusso — multi-turno a uno slot per volta,
 rinegoziazione budget a metà proposta senza un sì/no esplicito — con la
 stessa qualità di fraseggio e la stessa disciplina "una proposta alla volta".
 
+### Tre bug trovati da Giuseppe testando dal vivo (sessione `81992bfd-...`, 2026-09-15 ~16:40)
+
+Giuseppe ha continuato a testare la stessa conversazione reale (quella del
+primissimo bug sul loop delle date) e ha segnalato due problemi in un
+colpo solo: "pare non prenda la città" e un tono "un po' meccanico" nelle
+domande sui dati del viaggiatore. Leggendo lo stato reale della
+conversazione ho trovato **tre** bug distinti, non due:
+
+1. **Conflitto di campo "città".** `slots.city` (destinazione del viaggio)
+   e `traveller.city` (città di residenza, per la fatturazione) sono due
+   campi diversi ma `interpret()` non sapeva mai a quale stage/domanda
+   stesse rispondendo il viaggiatore. Prova diretta nello stato reale:
+   dopo una proposta confermata per **Lanzarote**, una risposta secca
+   "Lecco" (destinata alla città di residenza) aveva sovrascritto
+   `slots.city` a "Lecco" — la destinazione del viaggio, già confermata,
+   corrotta silenziosamente. **Corretto in due passi**: (a) guardia
+   deterministica lato codice — `slotUpdates` (i campi del viaggio) non
+   vengono più applicati affatto quando lo stage non è più
+   "collecting"/"proposing" (il viaggio è bloccato, non più
+   rinegoziabile a quel punto), qualunque cosa restituisca il modello;
+   (b) `interpret()` ora riceve anche una frase che descrive cosa si sta
+   chiedendo in quel turno specifico (es. "la città DI RESIDENZA del
+   viaggiatore... NON la destinazione del viaggio"), così una risposta
+   secca e ambigua va nel campo giusto invece di andare persa nel campo
+   sbagliato (poi scartato dalla guardia del punto a). Verificato dal vivo
+   dopo il fix: `slots.city` resta "Milano", `traveller.city` diventa
+   "Roma" — nessuna corruzione, nessuna perdita.
+2. **Tono meccanico, causa reale trovata nel prompt**: l'istruzione per
+   ogni campo del viaggiatore diceva letteralmente "Spiega che per
+   procedere alla prenotazione ti servono i dati" — ripetuta identica per
+   OGNI campo (nome, cognome, email, telefono, città), 5 volte di fila.
+   Non era percezione soggettiva, era il prompt stesso a richiedere la
+   ripetizione. **Corretto**: la spiegazione del "perché" si dice solo la
+   prima volta (`isFirstAsk`); le domande successive sono dirette,
+   naturali, senza ripetere il contesto — verificato dal vivo: "Dove ti
+   mando la conferma?" / "Allora, a che numero ti raggiungo?" / "Da dove
+   scrivi?" invece della stessa formula fissa cinque volte.
+3. **Bug non segnalato da Giuseppe, trovato indagando il primo**: il
+   messaggio "il sistema è un po' lento, puoi ripetere?" che appariva
+   ripetuto 5 volte in fila non era un problema del motore AI — era
+   `POST /v1/itineraries` che falliva davvero, con `NOT_FOUND_ERROR`, su
+   un prodotto (Lanzarote, id 186) che era comparso come risultato di
+   ricerca normale e ben formato. Esattamente il caso "prodotto non
+   prenotabile" che il brief avvisa esistere, scoperto in fase di
+   prenotazione invece che di ricerca. Dato che il fallback già costruito
+   per le date sbagliate (retry sul `minDate` del candidato) non si
+   applicava — eravamo già sul `minDate`, non c'era altro a cui
+   ripiegare — la richiesta falliva sempre allo stesso modo, rendendo
+   "riprova" un consiglio vuoto. **Corretto**: quando succede, il prodotto
+   viene scartato (`rejectedProductIds`) e si cerca subito il prossimo
+   migliore candidato, con un riconoscimento onesto in una battuta sola
+   ("il pacchetto precedente non è più disponibile dal fornitore, ma ho
+   trovato...") invece di un loop di errori inutili. Verificato dal vivo
+   — per puro caso, nello stesso test del punto 1 — con un secondo
+   prodotto risultato anch'esso non prenotabile: il messaggio è arrivato
+   naturale, in un colpo solo, con la nuova proposta già dentro.
+
 **Metodologia a due tracce (decisa in fase di preparazione):**
 - Una sessione privata di pianificazione (mai pubblicata) dove Giuseppe e un
   Claude "consigliere" discutono strategia, dubbi, scarti di strada.

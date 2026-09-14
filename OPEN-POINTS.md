@@ -16,6 +16,22 @@
   405). Bypassato con successo creando il PaymentIntent direttamente via
   Stripe (vedi sotto) — ma questo non sblocca il bloccante sopra.
 
+## Risolto in questa sessione (per riferimento, non più aperto)
+
+- **Conflitto di campo "città"** (destinazione viaggio vs residenza
+  viaggiatore) che poteva sovrascrivere silenziosamente la destinazione
+  già confermata — corretto con guardia lato codice + contesto esplicito
+  a `interpret()`. Verificato dal vivo.
+- **Tono meccanico** nelle domande sui dati del viaggiatore (stessa
+  spiegazione ripetuta 5 volte) — corretto, spiegazione solo alla prima
+  domanda. Verificato dal vivo.
+- **Prodotto "non prenotabile" scoperto in fase di booking** (es.
+  Lanzarote id 186, `NOT_FOUND_ERROR` su un prodotto uscito come
+  risultato di ricerca valido) — prima produceva un loop di "sistema
+  lento" inutile; ora viene scartato e si propone il prossimo candidato
+  con riconoscimento onesto in una battuta. Verificato dal vivo (per
+  caso, su un secondo prodotto).
+
 ## Trovato ma non ancora deciso
 
 - **Wireare la creazione diretta del PaymentIntent Stripe (bypass del GET

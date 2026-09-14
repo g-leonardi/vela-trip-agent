@@ -102,15 +102,28 @@ Regole:
 - "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore (es. "il 25 settembre", "il prossimo weekend", "tra due settimane", "domani") — NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico.
 - "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
 - "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco" → "low". Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
-- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".`;
+- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".
+- Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).`;
 
 export async function interpret(
   env: Env,
   currentSlots: Slots,
   currentTraveller: TravellerInfo,
   latestUserText: string,
+  currentlyAsking: string | null = null,
 ): Promise<RawInterpretation> {
-  const user = `Stato attuale: ${JSON.stringify({ slots: currentSlots, traveller: currentTraveller })}\nMessaggio del viaggiatore: "${latestUserText}"`;
+  // "city" exists on both slots (trip destination) and traveller (billing
+  // address) — without knowing which question was just asked, a bare
+  // answer like "Milano" is genuinely ambiguous. Verified live: this
+  // caused the traveller's real destination to get silently overwritten
+  // by their billing city on one turn, and on a later turn (after slots
+  // become locked once the trip is confirmed — see conversation.ts) the
+  // answer was dropped entirely because the model put it in the now-
+  // discarded slotUpdates.city instead of travellerUpdates.city. Passing
+  // what's actually being asked resolves the ambiguity at the source
+  // instead of only guarding against its worst consequence.
+  const askContext = currentlyAsking ? `\nStai chiedendo in questo momento: ${currentlyAsking}` : "";
+  const user = `Stato attuale: ${JSON.stringify({ slots: currentSlots, traveller: currentTraveller })}${askContext}\nMessaggio del viaggiatore: "${latestUserText}"`;
   const raw = await chat(env, INTERPRET_SYSTEM, user);
   const parsed = extractJson<RawInterpretation>(raw);
   return (
@@ -124,15 +137,14 @@ export async function interpret(
 
 export type SayDirective =
   | { kind: "ask_slot"; missing: "sport" | "city" | "dateFrom" | "budget" | "adults" }
-  | { kind: "propose"; ctx: ProposalContext }
-  | { kind: "ask_traveller_field"; field: keyof TravellerInfo }
+  | { kind: "propose"; ctx: ProposalContext; precededBy?: "rejected" | "unavailable" }
+  | { kind: "ask_traveller_field"; field: keyof TravellerInfo; isFirstAsk: boolean }
   | { kind: "reverifying" }
   | { kind: "price_changed"; oldPrice: string; newPrice: string }
   | { kind: "payment_unavailable"; retrying: boolean }
   | { kind: "booking_forbidden" }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
-  | { kind: "no_match" }
-  | { kind: "rejected_next" };
+  | { kind: "no_match" };
 
 const SAY_SYSTEM = `Sei la voce di un agente di prenotazione viaggi sportivi (padel/tennis + hotel), pensato per essere ascoltato più che letto: l'interazione è vocale, il viaggiatore potrebbe non guardare uno schermo. Parla in modo naturale, caldo, diretto, come faresti al telefono.
 Regole ferree:
@@ -140,7 +152,8 @@ Regole ferree:
 - Usa SOLO i fatti forniti nell'istruzione — non inventare prezzi, date o dettagli.
 - Se c'è un compromesso (prezzo o data diversi da quanto chiesto), dillo esplicitamente e chiedi conferma, sul modello: "non riesco a X, riesco a Y, procedo?".
 - Rispondi in italiano, tono colloquiale ma professionale.
-- Se la proposta è "exact" (nessun compromesso), presenta la proposta con entusiasmo misurato e chiedi conferma.`;
+- Se la proposta è "exact" (nessun compromesso), presenta la proposta con entusiasmo misurato e chiedi conferma.
+- MAI aprire il messaggio con una formula fissa tipo "Per completare la prenotazione mi servono i tuoi dati" o "Per procedere ho bisogno di..." — varia sempre l'attacco della frase, come faresti davvero parlando con una persona invece di leggere un modulo. Non spiegare il perché di una domanda se l'hai già spiegato poco prima nella stessa conversazione.`;
 
 function directiveToInstruction(d: SayDirective): string {
   switch (d.kind) {
@@ -156,7 +169,13 @@ function directiveToInstruction(d: SayDirective): string {
     }
     case "propose": {
       const { candidate, category, compromise } = d.ctx;
-      const base = `Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.`;
+      const lead =
+        d.precededBy === "rejected"
+          ? "Il viaggiatore ha rifiutato la proposta precedente. Riconoscilo con una parola o due (non una frase intera a sé) e poi, nello stesso messaggio, "
+          : d.precededBy === "unavailable"
+            ? "Il pacchetto proposto prima non risulta più prenotabile per davvero (un problema del fornitore, non tuo). Diglielo in breve e poi, nello stesso messaggio, "
+            : "";
+      const base = `${lead}Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.`;
       if (category === "exact") return `${base} Corrisponde esattamente a quanto chiesto. Chiedi conferma per procedere.`;
       const c = compromise!;
       if (c.kind === "date_unspecified") {
@@ -181,7 +200,10 @@ function directiveToInstruction(d: SayDirective): string {
         postalCode: "il CAP",
         countryCode: "il paese",
       };
-      return `Spiega in una frase che per procedere alla prenotazione reale ti servono i dati del viaggiatore, e chiedi ${labels[d.field] ?? d.field}.`;
+      if (d.isFirstAsk) {
+        return `Spiega in una frase breve che per bloccare la prenotazione reale ti servono un paio di dati, poi chiedi ${labels[d.field] ?? d.field}. Questa è la prima volta che lo dici in questa conversazione.`;
+      }
+      return `Chiedi ${labels[d.field] ?? d.field} in modo naturale e diretto, come continueresti una conversazione già avviata — NON ripetere che ti servono i dati per la prenotazione, l'hai già detto poco fa. Una frase breve, formulata diversamente dalle domande precedenti.`;
     }
     case "reverifying":
       return `Di' in una frase breve che stai ricontrollando prezzo e disponibilità reali prima di chiudere, perché l'inventario è condiviso e potrebbe essere cambiato nel frattempo. Tono rassicurante.`;
@@ -197,8 +219,6 @@ function directiveToInstruction(d: SayDirective): string {
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
     case "no_match":
       return `Non hai trovato nulla che corrisponda in modo ragionevole a quanto chiesto finora (troppo lontano da budget o date disponibili). Non proporre nulla di debole: fai una domanda di chiarimento per allargare la ricerca (es. altra città, budget più alto, date più flessibili).`;
-    case "rejected_next":
-      return `Il viaggiatore ha rifiutato la proposta precedente. Di' in una frase breve che cerchi un'altra opzione, poi fermati (la prossima proposta arriverà in un messaggio successivo).`;
   }
 }
 
