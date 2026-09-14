@@ -401,11 +401,13 @@ stessa qualità di fraseggio e la stessa disciplina "una proposta alla volta".
 ## 6. Comunicazione (5%)
 - Questo documento (aggiornato durante il lavoro, non a posteriori — vedi
   i timestamp dei commit), `/agent-log/` per la trascrizione grezza della
-  sessione, e il video finale (se il tempo lo permette) di un acquisto
-  reale end-to-end. Deliberatamente non abbiamo speso tempo extra su un
-  README separato: a peso 5% contro il 25%+25% di prototipo/scalabilità,
-  la priorità dichiarata dal brief stesso era chiudere il booking reale,
-  non rifinire la documentazione.
+  sessione, un `README.md` minimale come punto d'ingresso (link a questo
+  documento + URL live + come far girare il progetto in locale, niente di
+  più), e il video finale (se il tempo lo permette) di un acquisto reale
+  end-to-end. Deliberatamente non abbiamo investito oltre questo minimo: a
+  peso 5% contro il 25%+25% di prototipo/scalabilità, la priorità
+  dichiarata dal brief stesso era chiudere il booking reale, non rifinire
+  la documentazione.
 
 ---
 
