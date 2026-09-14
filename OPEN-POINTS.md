@@ -12,6 +12,16 @@
   backend del brand — è un bug del loro gateway, non qualcosa aggirabile
   con credenziali diverse. **Stato: isolato e provato definitivamente
   2026-09-14 ~17:00, non risolvibile da qui.**
+  - **Aggiornamento 2026-09-14 ~17:35, dopo il tip di Carlo**: provato
+    `paymentType: "plan"` invece di `"full"` su un booking reale, dopo un
+    pagamento Stripe diretto vero e riuscito (PaymentIntent
+    `pi_3UFbvbRpam3eRRKb0Cn6XJ12`, 730€, `succeeded`). Risultato:
+    **identico errore generico 502** dell'altro valore. Questo chiude
+    definitivamente l'ipotesi "valore sbagliato" — è un bug di
+    field-forwarding nel gateway (il campo viene scartato comunque prima
+    di arrivare al backend del brand), non una questione di quale valore
+    scegliere. Nessun valore di `paymentType` sblocca `/v1/bookings` allo
+    stato attuale. Riportato a Giuseppe per il relay a Carlo.
 - **`GET .../itineraries/{id}/payment` risponde sempre 502** (upstream
   405). Bypassato con successo creando il PaymentIntent direttamente via
   Stripe (vedi sotto) — ma questo non sblocca il bloccante sopra.
@@ -31,17 +41,69 @@
   lento" inutile; ora viene scartato e si propone il prossimo candidato
   con riconoscimento onesto in una battuta. Verificato dal vivo (per
   caso, su un secondo prodotto).
+- **`PUT /pax` con un solo passeggero su un'itinerary a N adulti dava
+  sempre 502** (dettaglio upstream:
+  `changePaxDetails.paxNumberChanged`, HTTP reale 400 dietro il 502
+  generico del gateway). Causa: HOFJ pre-crea uno slot pax per ogni
+  adulto già alla creazione dell'itinerary (`pax-1`, `pax-2`, ... —
+  verificato dal vivo leggendo lo snapshot prima della PUT); mandarne
+  uno solo veniva letto come "cambio del numero di passeggeri", non
+  "compilazione nomi". **Bug vero e nostro**, non un limite HOFJ — corretto
+  mandando un record pax per ogni adulto (`pax-1` con nome/cognome del
+  viaggiatore demo, `pax-2..N` con solo `refId`, come lo stub vuoto che
+  HOFJ stesso già crea per loro). Verificato dal vivo il 2026-09-14
+  ~17:35: prima bloccava ogni prenotazione a 2+ adulti con un loop di
+  "sistema lento" indistinguibile da un vero rate-limit; dopo il fix la
+  pipeline arriva regolarmente fino al pagamento Stripe reale.
+- **Pagamento diretto via Stripe (bypass del `GET .../payment` rotto),
+  sanzionato da Carlo — wireato e verificato dal vivo**: creazione +
+  conferma reale di un PaymentIntent Stripe test-mode (`succeeded`,
+  agganciato all'itinerario via `metadata.checkoutRefId`, stesso pattern
+  usato dal backend HOFJ) dentro `attemptPayment()`. Porta il prototipo
+  fino al pagamento riuscito per davvero; il bloccante `/v1/bookings`
+  sopra resta comunque l'ultimo passo, non risolvibile da qui.
+- **Mirroring della lingua**: l'agente ora risponde nella lingua del
+  viaggiatore (rilevata da `interpret()`, persistita per conversazione),
+  non più sempre in italiano. Verificato dal vivo con una conversazione
+  interamente in inglese.
+- **Budget qualitativo "medio" (`budgetTier: "mid"`)**: "nice, but not
+  crazy expensive" / "carino ma non troppo caro" ora seleziona il
+  prodotto di prezzo mediano nel pool, distinto da "low" (il più
+  economico). Prima veniva confuso con "low". Verificato dal vivo.
+- **Consapevolezza del mese richiesto (`preferredMonth`)** — fondamentale
+  per Giuseppe, corrisponde a un attrito reale vissuto in prima persona:
+  "three days off in June" senza un giorno preciso ora fa preferire, tra
+  i candidati, quelli con disponibilità reale in quel mese, e offre una
+  data dentro quel mese invece del semplice inizio del range del
+  prodotto. Verificato dal vivo (il candidato specifico trovato per
+  Barcellona non aveva affatto disponibilità a giugno — un solo giorno
+  fisso a dicembre — quindi l'agente è correttamente caduto sul fallback
+  dichiarato, non un bug).
+- **Profilo viaggiatore demo (`DEMO_TRAVELLER`)**: sostituisce la
+  raccolta a voce dei dati anagrafici/fatturazione per questa demo,
+  come base concettuale per una futura profilazione utente reale (login
+  per utente). Verificato dal vivo: una prenotazione con questi dati
+  salta interamente lo step "collecting_traveller" fino all'apertura del
+  carrello reale.
 
-## Trovato ma non ancora deciso
+## Ancora aperto, dalla lista di Giuseppe del 2026-09-14
 
-- **Wireare la creazione diretta del PaymentIntent Stripe (bypass del GET
-  rotto) dentro `attemptPayment()` nel codice del Worker?** Verificato dal
-  vivo che funziona (pagamento reale test-mode riuscito, agganciato
-  all'itinerario reale via `metadata.checkoutRefId`, stesso pattern usato
-  dal backend HOFJ — 38 PaymentIntent riusciti trovati nello stesso
-  account). Non chiuderebbe comunque la prenotazione finale (bloccante
-  sopra resta), ma porterebbe il prototipo fino al pagamento riuscito
-  invece di fermarsi prima. **In attesa di decisione di Giuseppe.**
+- **"Shortlist" di città reali prima della scelta finale** (punto 2 della
+  lista): Giuseppe è d'accordo che l'agente decida alla fine, ma vuole che
+  ragioni prima su una lista di città con disponibilità reale, non solo
+  prenda il primo risultato grezzo della ricerca. Oggi esiste solo il
+  meccanismo più semplice (`location_unspecified`, compromesso dichiarato
+  su una singola città) — non ancora il ragionamento su una shortlist
+  reale. **Non ancora implementato.**
+- **Prezzo "confermato" prima di chiedere di prenotare** (punto 5):
+  spostare l'apertura reale del carrello (e quindi la verifica prezzo)
+  prima della proposta, invece che dopo la conferma del viaggiatore —
+  così il prezzo mostrato è già garantito, non "verificato in silenzio"
+  un turno dopo. Giuseppe ha detto "non ho capito" alla mia prima
+  spiegazione; è stata solo chiarita, non richiesta esplicitamente. **In
+  attesa di via libera esplicito prima di implementarla** — è un cambio
+  di architettura non banale (aprirebbe un carrello reale HOFJ per ogni
+  proposta, anche quelle che verranno rifiutate).
 
 ## Deliverable ancora aperti
 

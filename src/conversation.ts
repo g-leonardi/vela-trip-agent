@@ -1,11 +1,12 @@
 import { DurableObject } from "cloudflare:workers";
-import { HofjApiError, HofjClient } from "./hofj/client";
-import { AiUnavailableError, interpret, say } from "./engine/ai";
-import { resolveDate } from "./engine/dates";
+import { HofjApiError, HofjClient, type PaxPayload } from "./hofj/client";
+import { AiUnavailableError, interpret, say, type SayDirective } from "./engine/ai";
+import { extractMonthHint, resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
+import { confirmPaymentIntent, createPaymentIntent } from "./stripe/client";
 import {
+  DEMO_TRAVELLER,
   EMPTY_SLOTS,
-  EMPTY_TRAVELLER,
   type ConversationState,
   type Env,
   type Slots,
@@ -29,8 +30,13 @@ const BUDGET_LOOP_BREAKER = 1; // ask once; if still unanswered next time, decid
 function initialState(): ConversationState {
   return {
     stage: "collecting",
+    language: null,
     slots: { ...EMPTY_SLOTS },
-    traveller: { ...EMPTY_TRAVELLER },
+    // Stand-in for a real per-user profile (no login exists yet) — see
+    // the doc on DEMO_TRAVELLER in types.ts. Every field here can still
+    // be overridden by the traveller stating it explicitly at any point;
+    // this is a default, not a lock.
+    traveller: { ...DEMO_TRAVELLER },
     messages: [],
     proposal: null,
     rejectedProductIds: [],
@@ -73,6 +79,13 @@ export class ConversationDO extends DurableObject<Env> {
     await this.ctx.storage.put("state", state);
   }
 
+  /** Thin wrapper so every reply picks up the conversation's detected
+   * language without threading state.language through every single call
+   * site by hand — see language mirroring, ARCHITECTURE.md 2026-09-15. */
+  private say(state: ConversationState, directive: SayDirective): Promise<string> {
+    return say(this.env, directive, state.language);
+  }
+
   async getState(): Promise<ConversationState> {
     return this.loadState();
   }
@@ -92,24 +105,36 @@ export class ConversationDO extends DurableObject<Env> {
       return { reply, state };
     }
 
-    // The HOFJ inventory/backend is shared and can change mid-session (the
-    // brief flags this explicitly) — a payment failure specifically is
-    // exactly the transient-looking case worth letting the traveller
-    // retry, without starting a whole new conversation/cart. A bookings
-    // permission failure (403) is not: retrying won't fix a missing
-    // entitlement, so that one stays terminal.
+    // The HOFJ inventory/backend/gateway is shared and can genuinely change
+    // mid-session — not hypothetical, we watched the bookings 403 disappear
+    // and turn into a different error later in this same session. So both
+    // a payment failure and a bookings failure are worth letting the
+    // traveller retry without starting a whole new conversation/cart, just
+    // via different recovery paths: a payment failure retries the payment
+    // itself, while a bookings failure (which only happens *after* a real
+    // payment already succeeded) only retries the booking confirmation —
+    // never re-pay for something already paid.
     if (state.stage === "failed") {
-      const retryable = state.failureReason?.startsWith("payment:") && state.itineraryId;
       const wantsRetry = /riprova|di nuovo|ritenta|prova ancora|retry/i.test(text);
-      if (retryable && wantsRetry) {
+      const paymentRetryable = state.failureReason?.startsWith("payment:") && state.itineraryId;
+      const bookingRetryable = state.failureReason?.startsWith("bookings:") && state.itineraryId;
+      if (wantsRetry && paymentRetryable) {
         const reply = await this.attemptPayment(state);
         state.messages.push({ role: "agent", text: reply, at: Date.now() });
         await this.saveState(state);
         return { reply, state };
       }
-      const reply = retryable
+      if (wantsRetry && bookingRetryable) {
+        const reply = await this.confirmBookingNow(state, "plan");
+        state.messages.push({ role: "agent", text: reply, at: Date.now() });
+        await this.saveState(state);
+        return { reply, state };
+      }
+      const reply = paymentRetryable
         ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi, oppure apri una nuova conversazione.`
-        : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
+        : bookingRetryable
+          ? `Il pagamento è andato a buon fine, ma non riesco ancora a confermare la prenotazione. Dimmi "riprova" per ritentare solo quella parte.`
+          : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
       state.messages.push({ role: "agent", text: reply, at: Date.now() });
       await this.saveState(state);
       return { reply, state };
@@ -154,9 +179,25 @@ export class ConversationDO extends DurableObject<Env> {
         // being asked about, and that signal was being silently dropped.
         if (typeof dateFromText === "string") {
           state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+          // A month hint ("in June") is worth keeping even once a vague
+          // phrase resolves to nothing else useful — matcher.ts uses it to
+          // bias which candidate gets picked and which date within it gets
+          // offered, instead of blindly defaulting to the earliest slot
+          // regardless of season (regression: "three days off in June" got
+          // offered a December date). Cleared once a real day resolves,
+          // same as dateFromVague.
+          state.slots.preferredMonth = resolvedDates.dateFrom ? null : extractMonthHint(dateFromText);
         }
       }
       state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
+
+      // Sticky once detected: respond in whatever language the traveller
+      // is actually using, not always Italian (regression: a fully
+      // English conversation kept getting Italian replies — see
+      // ARCHITECTURE.md, 2026-09-15).
+      if (interpretation.language) {
+        state.language = interpretation.language;
+      }
 
       switch (state.stage) {
         case "collecting":
@@ -169,7 +210,7 @@ export class ConversationDO extends DurableObject<Env> {
           reply = await this.runCollectingTraveller(state);
           break;
         default:
-          reply = await say(this.env, { kind: "no_match" });
+          reply = await this.say(state, { kind: "no_match" });
       }
     } catch (err) {
       reply = await this.handleUnexpectedError(state, err);
@@ -276,7 +317,7 @@ export class ConversationDO extends DurableObject<Env> {
       if (this.isGatingSatisfied(state, key)) continue;
       if (key === "city") state.cityAskAttempts += 1;
       if (key === "budget") state.budgetAskAttempts += 1;
-      return say(this.env, { kind: "ask_slot", missing: key });
+      return this.say(state, { kind: "ask_slot", missing: key });
     }
     return this.searchAndPropose(state);
   }
@@ -293,13 +334,13 @@ export class ConversationDO extends DurableObject<Env> {
     const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
       state.stage = "collecting";
-      return say(this.env, { kind: "no_match" });
+      return this.say(state, { kind: "no_match" });
     }
     state.cityAskAttempts = 0;
     state.budgetAskAttempts = 0;
     state.proposal = ctx;
     state.stage = "proposing";
-    return say(this.env, { kind: "propose", ctx, precededBy });
+    return this.say(state, { kind: "propose", ctx, precededBy });
   }
 
   private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear"): Promise<string> {
@@ -334,7 +375,7 @@ export class ConversationDO extends DurableObject<Env> {
     const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
     if (missing) {
       const isFirstAsk = REQUIRED_TRAVELLER_FIELDS.every((f) => state.traveller[f] === null);
-      return say(this.env, { kind: "ask_traveller_field", field: missing, isFirstAsk });
+      return this.say(state, { kind: "ask_traveller_field", field: missing, isFirstAsk });
     }
     return this.openRealCartAndAttemptPayment(state);
   }
@@ -394,7 +435,7 @@ export class ConversationDO extends DurableObject<Env> {
           category: "compromise",
           compromise: { kind: "date", requested: requestedDate, offered: candidate.minDate },
         };
-        return say(this.env, { kind: "propose", ctx: state.proposal });
+        return this.say(state, { kind: "propose", ctx: state.proposal });
       }
       // Already on the candidate's own known-good minDate and it *still*
       // failed: this isn't a date problem, and retrying (the generic
@@ -427,7 +468,7 @@ export class ConversationDO extends DurableObject<Env> {
         compromise: { kind: "price", requested: `${proposedPrice}€`, offered: `${livePrice}€` },
       };
       state.stage = "proposing";
-      return say(this.env, {
+      return this.say(state, {
         kind: "price_changed",
         oldPrice: `${proposedPrice}€`,
         newPrice: `${livePrice}€`,
@@ -449,9 +490,20 @@ export class ConversationDO extends DurableObject<Env> {
         countryCode: traveller.countryCode ?? candidate.country,
       },
     });
-    await this.hofj.putPax(state.itineraryId, [
-      { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! },
-    ]);
+    // HOFJ auto-provisions one pax slot per adult on the itinerary the
+    // moment it's created (verified live: a 2-adult itinerary already has
+    // "pax-1"/"pax-2" in its snapshot before this call). Sending fewer pax
+    // records than that reads upstream as *changing* paxNumber, not just
+    // filling in names, and 400s (surfaced through the gateway as a
+    // generic 502) with detail
+    // "changePaxDetails.paxNumberChanged" — verified live with 2 adults
+    // and a single pax-1 entry. We only collect one real traveller's name
+    // in this demo scope, so companions beyond the first get a bare refId,
+    // matching the empty stub HOFJ itself already creates for them.
+    const pax: PaxPayload[] = Array.from({ length: state.slots.adults! }, (_, i) =>
+      i === 0 ? { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! } : { refId: `pax-${i + 1}` },
+    );
+    await this.hofj.putPax(state.itineraryId, pax);
 
     return this.attemptPayment(state);
   }
@@ -464,30 +516,70 @@ export class ConversationDO extends DurableObject<Env> {
       // client-side. See ARCHITECTURE.md — untestable while the upstream
       // payment endpoint 502s, kept spec-correct for when it recovers.
       state.stage = "paying";
-      return say(this.env, { kind: "payment_unavailable", retrying: true });
+      return this.say(state, { kind: "payment_unavailable", retrying: true });
     } catch (err) {
+      if (err instanceof HofjApiError) {
+        console.error("getPaymentIntent failed:", err.status, err.detail.slice(0, 200));
+      }
+      // HOFJ's own payment-intent refresh is broken (502, upstream 405).
+      // Vela confirmed (Carlo, 2026-09-15) that creating the PaymentIntent
+      // directly against their Stripe account is the *sanctioned* bypass
+      // for this, not a workaround we invented unilaterally — see
+      // stripe/client.ts and ARCHITECTURE.md.
+      if (this.env.STRIPE_SECRET_KEY) {
+        return this.attemptDirectStripePayment(state);
+      }
       state.stage = "failed";
       state.failureReason = err instanceof HofjApiError ? `payment: ${err.message}` : String(err);
-      return say(this.env, { kind: "payment_unavailable", retrying: false });
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
     }
   }
 
-  /** Invoked by the frontend once Stripe.js confirms the card payment
-   * client-side. Currently unreachable in practice — attemptPayment() never
-   * reaches "paying" while GET .../payment 502s — but implemented to spec
-   * so the last mile just works the moment that upstream bug is fixed. */
-  async confirmPaymentAndBook(): Promise<HandleMessageResult> {
-    const state = await this.loadState();
-    if (state.stage !== "paying" || !state.itineraryId) {
-      const reply = "Non c'è un pagamento in corso da confermare per questa conversazione.";
-      return { reply, state };
-    }
-    let reply: string;
+  /** Real Stripe test-mode payment, created and confirmed directly against
+   * HOFJ's own account (see stripe/client.ts for why this is sanctioned,
+   * not a hack). Auto-confirms with Stripe's own test card token — a
+   * deliberate demo simplification (documented in ARCHITECTURE.md): a real
+   * production flow would hand the client_secret to the frontend for the
+   * actual cardholder to confirm via Stripe Elements, never touch card
+   * details server-side. There is no such frontend integration yet in
+   * this prototype. */
+  private async attemptDirectStripePayment(state: ConversationState): Promise<string> {
     try {
-      const booking = await this.hofj.confirmBooking(state.itineraryId);
+      const amountMinorUnits = Math.round(Number(state.totalPrice!.amount) * 100);
+      const intent = await createPaymentIntent(this.env, {
+        amountMinorUnits,
+        currency: state.totalPrice!.currency,
+        itineraryId: state.itineraryId!,
+      });
+      await confirmPaymentIntent(this.env, intent.id);
+      // Real payment succeeded. Now try the actual booking confirmation —
+      // verified live (2026-09-15) that HOFJ's gateway drops the required
+      // paymentType field regardless of value ("full" and "plan" both
+      // 400 identically), so this is very likely to fail too, but it's
+      // their bug, worth attempting for real every time in case it's
+      // fixed mid-session (shared backend, can change without notice).
+      // "plan" first per Carlo's tip: the one real production product he
+      // pointed at uses a deposit/plan model, not full payment.
+      return this.confirmBookingNow(state, "plan");
+    } catch (err) {
+      state.stage = "failed";
+      state.failureReason = `payment: ${err instanceof Error ? err.message : String(err)}`;
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
+    }
+  }
+
+  /** Confirms the real booking with HOFJ. Only ever called after a real
+   * payment has already succeeded (either via a future Stripe.js frontend
+   * confirming client-side — confirmPaymentAndBook() below — or via the
+   * direct-Stripe fallback above), so every failure path here uses the
+   * "bookings:" failureReason prefix, never "payment:" — retrying this
+   * specific step should never re-charge anything. */
+  private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
+    try {
+      const booking = await this.hofj.confirmBooking(state.itineraryId!, paymentType);
       state.stage = "booked";
       state.reservationCode = booking.data;
-      reply = await say(this.env, {
+      return this.say(state, {
         kind: "booked",
         reservationCode: booking.data,
         title: state.proposal!.candidate.title,
@@ -498,12 +590,26 @@ export class ConversationDO extends DurableObject<Env> {
       state.stage = "failed";
       if (err instanceof HofjApiError && err.status === 403) {
         state.failureReason = "bookings: 403 forbidden-entity";
-        reply = await say(this.env, { kind: "booking_forbidden" });
-      } else {
-        state.failureReason = err instanceof Error ? err.message : String(err);
-        reply = await say(this.env, { kind: "payment_unavailable", retrying: false });
+        return this.say(state, { kind: "booking_forbidden" });
       }
+      state.failureReason = `bookings: ${err instanceof Error ? err.message : String(err)}`;
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
     }
+  }
+
+  /** Invoked by the frontend once Stripe.js confirms the card payment
+   * client-side. Currently unreachable in practice — attemptPayment() falls
+   * back to the direct-Stripe path instead of ever reaching "paying" while
+   * GET .../payment 502s — but implemented to spec so the last mile just
+   * works the moment that upstream bug is fixed and a real Elements
+   * integration exists in the frontend. */
+  async confirmPaymentAndBook(): Promise<HandleMessageResult> {
+    const state = await this.loadState();
+    if (state.stage !== "paying" || !state.itineraryId) {
+      const reply = "Non c'è un pagamento in corso da confermare per questa conversazione.";
+      return { reply, state };
+    }
+    const reply = await this.confirmBookingNow(state, "full");
     state.messages.push({ role: "agent", text: reply, at: Date.now() });
     await this.saveState(state);
     return { reply, state };

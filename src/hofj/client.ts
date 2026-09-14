@@ -203,11 +203,15 @@ export class HofjClient {
     return this.request("GET", `/v1/itineraries/${itineraryId}/payment`);
   }
 
-  /** Confirm the booking after Stripe payment succeeds. Known-broken
-   * upstream as of 2026-09-14 (403 forbidden-entity: the provided API key's
-   * allowedEntities does not include "bookings") — see ARCHITECTURE.md. */
-  confirmBooking(itineraryId: string): Promise<{ data: string }> {
-    return this.request("POST", "/v1/bookings", { body: { itineraryId } });
+  /** Confirm the booking after Stripe payment succeeds. `paymentType` is
+   * undocumented in the OpenAPI spec (which lists only itineraryId) but
+   * required by the actual upstream — "full" (pay everything now) or
+   * "plan" (deposit + balance, per-product). Known-broken as of
+   * 2026-09-15: verified live that the gateway drops this field entirely
+   * before forwarding it (identical ZodError with either value) — see
+   * ARCHITECTURE.md. Sent anyway, spec-correct, for when that's fixed. */
+  confirmBooking(itineraryId: string, paymentType: "full" | "plan" = "full"): Promise<{ data: string }> {
+    return this.request("POST", "/v1/bookings", { body: { itineraryId, paymentType } });
   }
 
   getQuota(): Promise<{ data: { remainingInWindow: number; limitPerMinute: number } }> {

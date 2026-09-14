@@ -131,6 +131,17 @@ describe("classify", () => {
     expect(result?.compromise).toBeNull();
   });
 
+  it("budgetTier 'mid' selects the median-priced candidate, distinct from 'low's cheapest pick (regression: 'nice, but not crazy expensive' was misread as 'cheapest')", () => {
+    const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25", budgetTier: "mid" as const };
+    const cheap = product({ productId: 1, price: 100 });
+    const pricey = product({ productId: 2, price: 900 });
+    const mid = product({ productId: 3, price: 300 });
+    const result = classify(slots, [pricey, cheap, mid], [], true);
+    expect(result?.candidate.productId).toBe("3");
+    expect(result?.category).toBe("exact");
+    expect(result?.compromise).toBeNull();
+  });
+
   it("budgetTier 'high' keeps the default (top-ranked) selection and is never flagged as a budget compromise", () => {
     const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25", budgetTier: "high" as const };
     const topRanked = product({ productId: 1, price: 900 });
@@ -139,6 +150,21 @@ describe("classify", () => {
     expect(result?.candidate.productId).toBe("1"); // stays top-ranked, not forced cheapest
     expect(result?.category).toBe("exact");
     expect(result?.compromise).toBeNull();
+  });
+
+  it("offers a date within the preferred month for date_unspecified, not the range's own start (regression: 'three days off in June' was offered a December date)", () => {
+    const slots: Slots = { ...baseSlots, budgetTier: "low" as const, preferredMonth: 6 }; // no dateFrom
+    const result = classify(slots, [product({ price: 200, minDate: "2026-01-01", maxDate: "2026-12-31" })], [], true);
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise).toEqual({ kind: "date_unspecified", requested: "", offered: "2026-06-01" });
+  });
+
+  it("reorders candidates so one with availability in the preferred month outranks a top-ranked one without it", () => {
+    const slots: Slots = { ...baseSlots, budget: 1000, preferredMonth: 6 }; // no dateFrom, generous budget
+    const noJune = product({ productId: 1, price: 300, minDate: "2026-01-01", maxDate: "2026-03-01" });
+    const hasJune = product({ productId: 2, price: 300, minDate: "2026-05-01", maxDate: "2026-07-01" });
+    const result = classify(slots, [noJune, hasJune], [], true);
+    expect(result?.candidate.productId).toBe("2");
   });
 
   it("a real numeric budget always overrides budgetTier-driven cheapest-selection", () => {

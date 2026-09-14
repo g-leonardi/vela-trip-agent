@@ -1,0 +1,67 @@
+import type { Env } from "../types";
+
+export class StripeApiError extends Error {
+  constructor(
+    public status: number,
+    detail: string,
+  ) {
+    super(`Stripe ${status}: ${detail}`);
+    this.name = "StripeApiError";
+  }
+}
+
+interface PaymentIntent {
+  id: string;
+  client_secret: string;
+  status: string;
+}
+
+async function request(env: Env, path: string, params: Record<string, string>): Promise<PaymentIntent> {
+  if (!env.STRIPE_SECRET_KEY) throw new StripeApiError(0, "STRIPE_SECRET_KEY not configured");
+  const res = await fetch(`https://api.stripe.com/v1${path}`, {
+    method: "POST",
+    headers: {
+      // Stripe accepts the secret key as the HTTP Basic username with an
+      // empty password — same as every official Stripe client library.
+      Authorization: `Basic ${btoa(`${env.STRIPE_SECRET_KEY}:`)}`,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: new URLSearchParams(params),
+  });
+  const json = await res.json<PaymentIntent & { error?: { message?: string } }>();
+  if (!res.ok) throw new StripeApiError(res.status, json.error?.message ?? res.statusText);
+  return json;
+}
+
+/** Creates a real Stripe PaymentIntent directly against HOFJ's own Stripe
+ * account — confirmed by Vela (Carlo, 2026-09-15) as the sanctioned bypass
+ * for their own broken GET .../payment endpoint, not a workaround we
+ * invented unilaterally. `metadata.checkoutRefId = itineraryId` is the
+ * exact key HOFJ's own backend uses internally (verified live: found 38
+ * real succeeded PaymentIntents in this same account with that precise
+ * metadata shape before writing this). See ARCHITECTURE.md. */
+export async function createPaymentIntent(
+  env: Env,
+  params: { amountMinorUnits: number; currency: string; itineraryId: string },
+): Promise<PaymentIntent> {
+  return request(env, "/payment_intents", {
+    amount: String(params.amountMinorUnits),
+    currency: params.currency.toLowerCase(),
+    "payment_method_types[]": "card",
+    "metadata[checkoutRefId]": params.itineraryId,
+  });
+}
+
+/** Confirms with Stripe's own official test card token. Deliberate demo
+ * simplification, documented as such in ARCHITECTURE.md: a real
+ * production flow hands the client_secret to the frontend for Stripe
+ * Elements / the actual cardholder to confirm — the Worker should never
+ * touch real card details. There's no Stripe.js integration in this
+ * prototype's frontend, so this is how the payment step gets proven to
+ * work for real, in test mode, without building that UI under time
+ * pressure. */
+export async function confirmPaymentIntent(env: Env, paymentIntentId: string): Promise<PaymentIntent> {
+  return request(env, `/payment_intents/${paymentIntentId}/confirm`, {
+    payment_method: "pm_card_visa",
+  });
+}

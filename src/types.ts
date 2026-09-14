@@ -8,6 +8,12 @@ export interface Env {
   HOFJ_API_KEY: string;
   ANTHROPIC_API_KEY?: string;
   STRIPE_PUBLISHABLE_KEY?: string;
+  /** Restricted Stripe secret key (test mode), confirmed by Vela
+   * (2026-09-15) as the sanctioned way to create real PaymentIntents
+   * directly against HOFJ's own Stripe account — see attemptPayment() in
+   * conversation.ts and ARCHITECTURE.md. Server-side only, never sent to
+   * the frontend. */
+  STRIPE_SECRET_KEY?: string;
 }
 
 /** What we've gathered from the traveller so far. Only sport/city are hard
@@ -24,14 +30,25 @@ export interface Slots {
    * Checked whenever dateFrom next becomes the missing slot, not only in
    * the turn it was said. Cleared once a real dateFrom is resolved. */
   dateFromVague: string | null;
+  /** A month the traveller hinted at ("in June", "a giugno") without a
+   * specific day — extracted deterministically (see engine/dates.ts,
+   * same reasoning as dateFromVague: don't trust the model with calendar
+   * logic). Used to bias candidate selection and the date_unspecified
+   * compromise toward that month instead of blindly offering the
+   * earliest availability regardless of when the traveller actually
+   * wanted to go (regression: live test offered December for a "three
+   * days off in June" request). 1-12, or null. */
+  preferredMonth: number | null;
   budget: number | null; // EUR, total for the trip
-  /** A qualitative budget answer ("economico"/"il top") that doesn't map
-   * to a number — a real answer, not a missing one, so it must not be
-   * treated as budget_unspecified. "low" biases selection toward the
-   * cheapest relevant candidate; "high" means no ceiling, keep the
-   * default (most relevant) selection. Mutually exclusive with `budget`
-   * in practice: interpret() sets one or the other. */
-  budgetTier: "low" | "high" | null;
+  /** A qualitative budget answer ("economico"/"il top"/"carino ma non
+   * troppo caro") that doesn't map to a number — a real answer, not a
+   * missing one, so it must not be treated as budget_unspecified. "low"
+   * biases selection toward the cheapest relevant candidate; "mid" picks
+   * something reasonably priced (neither cheapest nor priciest in the
+   * pool); "high" means no ceiling, keep the default (most relevant)
+   * selection. Mutually exclusive with `budget` in practice: interpret()
+   * sets one or the other. */
+  budgetTier: "low" | "mid" | "high" | null;
   /** Party size. Unlike city/date/budget, this is never inferred or
    * defaulted — the traveller must state it explicitly. See
    * ARCHITECTURE.md: precision policy decided 2026-09-15. */
@@ -45,6 +62,7 @@ export const EMPTY_SLOTS: Slots = {
   dateFrom: null,
   dateTo: null,
   dateFromVague: null,
+  preferredMonth: null,
   budget: null,
   budgetTier: null,
   adults: null,
@@ -70,6 +88,26 @@ export const EMPTY_TRAVELLER: TravellerInfo = {
   city: null,
   postalCode: null,
   countryCode: null,
+};
+
+/** Stand-in for a real per-user profile/login, which doesn't exist yet.
+ * Giuseppe's call (2026-09-15): for this demo, every conversation starts
+ * with a profile already on file — same idea as a real account with saved
+ * contact/payment details, just a single fixed demo identity instead of
+ * real auth. Deliberately synthetic data (never a real person's), since
+ * this is public source code. A traveller can still override any field by
+ * stating it explicitly — mergeDefined only overwrites with a real,
+ * non-null value, so this is a default, not a lock. The real target
+ * architecture (noted for later, not built this session): a per-user
+ * profile keyed by login, which the agent also learns from over time. */
+export const DEMO_TRAVELLER: TravellerInfo = {
+  firstName: "Demo",
+  lastName: "Traveller",
+  email: "demo.traveller@example.com",
+  phone: "+39 000 0000000",
+  city: "Milano",
+  postalCode: "20100",
+  countryCode: "IT",
 };
 
 export type Stage =
@@ -125,6 +163,13 @@ export interface ChatMessage {
 
 export interface ConversationState {
   stage: Stage;
+  /** Detected once the traveller's language is clear (a human name like
+   * "italiano"/"English"/"español", not necessarily an ISO code — easier
+   * for the model to both produce and consume) and sticky after that, so
+   * every reply — not just the first — matches the language the
+   * traveller is actually using. Null until detected; defaults to
+   * Italian in engine/ai.ts until then. */
+  language: string | null;
   slots: Slots;
   traveller: TravellerInfo;
   messages: ChatMessage[];

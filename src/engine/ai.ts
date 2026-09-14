@@ -81,29 +81,36 @@ async function chat(env: Env, system: string, user: string): Promise<string> {
 }
 
 interface RawInterpretation {
-  slotUpdates: Partial<Omit<Slots, "dateFrom" | "dateTo" | "dateFromVague">> & {
+  slotUpdates: Partial<Omit<Slots, "dateFrom" | "dateTo" | "dateFromVague" | "preferredMonth">> & {
     dateFromText?: string | null;
     dateToText?: string | null;
   };
   travellerUpdates: Partial<TravellerInfo>;
   decision: "yes" | "no" | "unclear";
+  /** A human-readable language name ("italiano", "English", "español"...)
+   * — only set when it's clear or has changed, so it doesn't get
+   * re-detected (and re-spent) every single turn. Null keeps whatever
+   * language the conversation already settled into. */
+  language: string | null;
 }
 
 const INTERPRET_SYSTEM = `Sei il modulo di comprensione di un agente di prenotazione viaggi sportivi (padel/tennis + hotel).
 Ricevi l'ultimo messaggio del viaggiatore e lo stato attuale noto. Estrai SOLO ciò che è esplicitamente detto o chiaramente implicito, senza inventare.
 Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo, con questa forma esatta:
 {
-  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "budgetTier": "low"|"high"|null, "adults": number|null, "preferences": string|null },
+  "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "budgetTier": "low"|"mid"|"high"|null, "adults": number|null, "preferences": string|null },
   "travellerUpdates": { "firstName": string|null, "lastName": string|null, "email": string|null, "phone": string|null, "city": string|null, "postalCode": string|null, "countryCode": string|null },
-  "decision": "yes"|"no"|"unclear"
+  "decision": "yes"|"no"|"unclear",
+  "language": string|null
 }
 Regole:
 - Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; i campi non menzionati restano null.
-- "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore (es. "il 25 settembre", "il prossimo weekend", "tra due settimane", "domani") — NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico.
-- "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
-- "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco" → "low". Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
-- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".
-- Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).`;
+- "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore, NELLA LINGUA in cui l'ha detta (es. "il 25 settembre", "next weekend", "in three days") — NON tradurla, NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico che riconosce sia italiano sia inglese.
+- "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1, "I'm going with Francesca" = 2) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
+- "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco", "cheap" → "low". Espressioni come "carino ma non troppo caro", "nella media", "niente di esagerato ma neanche il più economico", "nice, but not crazy expensive", "reasonable" → "mid" (NON "low": non sta chiedendo il più economico, sta chiedendo qualcosa di ragionevole). Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato", "money is no object" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
+- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok..., yes, sure, sounds good) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città..., that's too expensive) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".
+- Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).
+- "language": il nome della lingua in cui il viaggiatore sta scrivendo ADESSO, in italiano (es. "italiano", "inglese", "spagnolo", "francese", "tedesco"...). Valorizzalo solo se il messaggio è abbastanza lungo/chiaro da capirlo con sicurezza, o se sembra diverso dalla lingua usata nei messaggi precedenti (cambio di lingua a metà conversazione) — altrimenti lascialo null, non serve ripeterlo ogni turno.`;
 
 export async function interpret(
   env: Env,
@@ -131,6 +138,7 @@ export async function interpret(
       slotUpdates: {},
       travellerUpdates: {},
       decision: "unclear",
+      language: null,
     }
   );
 }
@@ -146,14 +154,16 @@ export type SayDirective =
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
   | { kind: "no_match" };
 
-const SAY_SYSTEM = `Sei la voce di un agente di prenotazione viaggi sportivi (padel/tennis + hotel), pensato per essere ascoltato più che letto: l'interazione è vocale, il viaggiatore potrebbe non guardare uno schermo. Parla in modo naturale, caldo, diretto, come faresti al telefono.
+function buildSaySystem(language: string | null): string {
+  return `Sei la voce di un agente di prenotazione viaggi sportivi (padel/tennis + hotel), pensato per essere ascoltato più che letto: l'interazione è vocale, il viaggiatore potrebbe non guardare uno schermo. Parla in modo naturale, caldo, diretto, come faresti al telefono.
 Regole ferree:
 - UN SOLO messaggio breve (1-3 frasi), MAI un elenco, MAI più di una proposta/opzione alla volta.
 - Usa SOLO i fatti forniti nell'istruzione — non inventare prezzi, date o dettagli.
 - Se c'è un compromesso (prezzo o data diversi da quanto chiesto), dillo esplicitamente e chiedi conferma, sul modello: "non riesco a X, riesco a Y, procedo?".
-- Rispondi in italiano, tono colloquiale ma professionale.
+- Rispondi in ${language ?? "italiano"}, tono colloquiale ma professionale — indipendentemente dalla lingua in cui è scritta questa istruzione (l'istruzione è sempre in italiano, la tua risposta al viaggiatore no).
 - Se la proposta è "exact" (nessun compromesso), presenta la proposta con entusiasmo misurato e chiedi conferma.
 - MAI aprire il messaggio con una formula fissa tipo "Per completare la prenotazione mi servono i tuoi dati" o "Per procedere ho bisogno di..." — varia sempre l'attacco della frase, come faresti davvero parlando con una persona invece di leggere un modulo. Non spiegare il perché di una domanda se l'hai già spiegato poco prima nella stessa conversazione.`;
+}
 
 function directiveToInstruction(d: SayDirective): string {
   switch (d.kind) {
@@ -222,7 +232,7 @@ function directiveToInstruction(d: SayDirective): string {
   }
 }
 
-export async function say(env: Env, directive: SayDirective): Promise<string> {
+export async function say(env: Env, directive: SayDirective, language: string | null = null): Promise<string> {
   const instruction = directiveToInstruction(directive);
-  return chat(env, SAY_SYSTEM, instruction);
+  return chat(env, buildSaySystem(language), instruction);
 }

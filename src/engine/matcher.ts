@@ -25,6 +25,32 @@ function daysBetween(a: string, b: string): number {
   return Math.abs(new Date(a).getTime() - new Date(b).getTime()) / 86_400_000;
 }
 
+function pad2(n: number): string {
+  return String(n).padStart(2, "0");
+}
+
+/** First date within [minDate, maxDate] that falls in the given month
+ * (1-12), checking every year the range spans — a product's availability
+ * window can cross a year boundary. Null if the month never overlaps the
+ * range at all. Used so a preferred month actually influences which date
+ * gets offered, instead of always defaulting to the range's own start
+ * (regression: live "three days off in June" got offered a December date
+ * because nothing looked at the month at all). */
+function firstDateInMonth(minDate: string, maxDate: string, month: number): string | null {
+  const start = new Date(`${minDate}T00:00:00Z`);
+  const end = new Date(`${maxDate}T00:00:00Z`);
+  for (let year = start.getUTCFullYear(); year <= end.getUTCFullYear(); year++) {
+    const monthStart = new Date(Date.UTC(year, month - 1, 1));
+    const monthEnd = new Date(Date.UTC(year, month, 0)); // last day of that month
+    const overlapStart = monthStart > start ? monthStart : start;
+    const overlapEnd = monthEnd < end ? monthEnd : end;
+    if (overlapStart <= overlapEnd) {
+      return `${overlapStart.getUTCFullYear()}-${pad2(overlapStart.getUTCMonth() + 1)}-${pad2(overlapStart.getUTCDate())}`;
+    }
+  }
+  return null;
+}
+
 /** Deterministic, auditable match classification — no invented numeric
  * scores. Business logic lives here so it can be unit-tested without the
  * AI binding; the AI's job is only to phrase the result (see engine/ai.ts).
@@ -39,8 +65,20 @@ export function classify(
   rejectedProductIds: string[],
   locationMatched: boolean,
 ): ProposalContext | null {
-  const pool = candidates.filter((c) => !rejectedProductIds.includes(String(c.productId)));
+  let pool = candidates.filter((c) => !rejectedProductIds.includes(String(c.productId)));
   if (pool.length === 0) return null;
+
+  // A preferred month (from a vague date like "in June" that didn't
+  // resolve to an exact day) doesn't hard-filter — a near-miss candidate
+  // is still worth a compromise, same reasoning as an exact date mismatch
+  // below — but it should outrank candidates with no relation to that
+  // month at all, so classify() doesn't pick something available only in
+  // a completely different season.
+  if (slots.dateFrom === null && slots.preferredMonth !== null) {
+    const month = slots.preferredMonth;
+    const matching = pool.filter((c) => firstDateInMonth(c.minDate, c.maxDate, month) !== null);
+    if (matching.length > 0) pool = [...matching, ...pool.filter((c) => !matching.includes(c))];
+  }
 
   // Which candidate to propose: normally the API's own top-ranked
   // (relevance/combinedScore) result. When the traveller wants cheap —
@@ -49,8 +87,17 @@ export function classify(
   // tiebreaker for something being chosen FOR them; pick the cheapest in
   // the pool instead, so any disclosed compromise is honest about what
   // "cheapest" actually means rather than an arbitrary ranking artifact.
-  const wantsCheapest = slots.budget === null && slots.budgetTier !== "high";
-  const best = wantsCheapest ? pool.reduce((min, c) => (c.price < min.price ? c : min), pool[0]!) : pool[0]!;
+  // "mid" ("carino ma non troppo caro") isn't the cheapest OR an
+  // unconstrained pick either — the median price in the pool is a
+  // defensible reading of "reasonable, not the bargain bin, not the
+  // splurge", better than either extreme.
+  const wantsCheapest = slots.budget === null && (slots.budgetTier === null || slots.budgetTier === "low");
+  const wantsMid = slots.budget === null && slots.budgetTier === "mid";
+  const best = wantsCheapest
+    ? pool.reduce((min, c) => (c.price < min.price ? c : min), pool[0]!)
+    : wantsMid
+      ? [...pool].sort((a, b) => a.price - b.price)[Math.floor(pool.length / 2)]!
+      : pool[0]!;
   const candidate = toCandidate(best);
 
   let category: ConfidenceCategory = "exact";
@@ -78,10 +125,10 @@ export function classify(
       requested: "",
       offered: `${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}`,
     };
-    // budgetTier "low"/"high" with no numeric budget: an explicit
+    // budgetTier "low"/"mid"/"high" with no numeric budget: an explicit
     // qualitative answer was given and is satisfied by construction
-    // (cheapest selected above for "low", default relevance ranking for
-    // "high") — no compromise needed for the budget dimension itself.
+    // (selection above already picked cheapest/median/default
+    // accordingly) — no compromise needed for the budget dimension itself.
   }
 
   if (!locationMatched && category !== "compromise") {
@@ -108,13 +155,18 @@ export function classify(
     // weekend a novembre", or simply nothing yet) shouldn't block a
     // proposal the way "collecting" used to (see ARCHITECTURE.md — live
     // regression where the dialogue just re-asked "when?" forever instead
-    // of ever suggesting something). Offer the candidate's own earliest
-    // availability as the concrete date, framed as a compromise so it
-    // still gets an explicit confirmation rather than being booked
-    // silently on the traveller's behalf.
+    // of ever suggesting something). Offer a concrete date, framed as a
+    // compromise so it still gets an explicit confirmation rather than
+    // being booked silently. If a month was hinted at ("in June") and the
+    // candidate has any availability that month, offer a date within it
+    // instead of blindly defaulting to the range's own start — verified
+    // live this mattered: "three days off in June" was getting offered a
+    // December date with nothing to say it wasn't what was asked for.
+    const inPreferredMonth =
+      slots.preferredMonth !== null ? firstDateInMonth(candidate.minDate, candidate.maxDate, slots.preferredMonth) : null;
     if (category !== "compromise") {
       category = "compromise";
-      compromise = { kind: "date_unspecified", requested: "", offered: candidate.minDate };
+      compromise = { kind: "date_unspecified", requested: "", offered: inPreferredMonth ?? candidate.minDate };
     }
   }
 

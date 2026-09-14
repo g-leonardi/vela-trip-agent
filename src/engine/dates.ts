@@ -1,17 +1,34 @@
-const ITALIAN_MONTHS: Record<string, number> = {
+// Month names in the two languages we've verified live traffic in
+// (Italian by default, English once language-mirroring kicked in — see
+// ARCHITECTURE.md, 2026-09-15). Adding a language here is just adding a
+// row; the rest of the resolver is language-agnostic regex plumbing.
+const MONTHS: Record<string, number> = {
   gennaio: 1,
+  january: 1,
   febbraio: 2,
+  february: 2,
   marzo: 3,
+  march: 3,
   aprile: 4,
+  april: 4,
   maggio: 5,
+  may: 5,
   giugno: 6,
+  june: 6,
   luglio: 7,
+  july: 7,
   agosto: 8,
+  august: 8,
   settembre: 9,
+  september: 9,
   ottobre: 10,
+  october: 10,
   novembre: 11,
+  november: 11,
   dicembre: 12,
+  december: 12,
 };
+const MONTH_NAMES_PATTERN = Object.keys(MONTHS).join("|");
 
 function pad(n: number): string {
   return String(n).padStart(2, "0");
@@ -27,8 +44,8 @@ function addDays(d: Date, days: number): Date {
   return copy;
 }
 
-/** Deterministic Italian/ISO date resolver. Calendar arithmetic is exactly
- * the kind of thing an LLM gets subtly wrong (verified live: Workers AI
+/** Deterministic IT/EN date resolver. Calendar arithmetic is exactly the
+ * kind of thing an LLM gets subtly wrong (verified live: Workers AI
  * Llama-3.3-70B returned "1970"/"1971" as the year despite an explicit
  * "today is 2026-09-14, never use 1970" instruction) — so the model is only
  * asked to lift the raw date phrase out of the sentence; resolving it to a
@@ -40,8 +57,8 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
   const isoMatch = text.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
 
-  // "9/10/2026", "9-10-2026", "09.10.2026" — Italian convention is
-  // day/month/year, not the US month/day/year (regression: "9/10/2026"
+  // "9/10/2026", "9-10-2026", "09.10.2026" — Italian/European convention
+  // is day/month/year, not the US month/day/year (regression: "9/10/2026"
   // typed literally by a traveller was silently dropped, see
   // ARCHITECTURE.md for the live repro).
   const slashMatch = text.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/);
@@ -54,33 +71,38 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
     }
   }
 
-  if (/\boggi\b/.test(text)) return toIso(now);
-  if (/\bdomani\b/.test(text)) return toIso(addDays(now, 1));
-  if (/\bdopodomani\b/.test(text)) return toIso(addDays(now, 2));
+  if (/\boggi\b|\btoday\b/.test(text)) return toIso(now);
+  if (/\bdomani\b|\btomorrow\b/.test(text)) return toIso(addDays(now, 1));
+  if (/\bdopodomani\b|\bday after tomorrow\b/.test(text)) return toIso(addDays(now, 2));
 
-  const inDays = text.match(/tra\s+(\d+)\s+giorni/);
-  if (inDays) return toIso(addDays(now, Number(inDays[1])));
-  const inWeeks = text.match(/tra\s+(\d+)\s+settiman/);
-  if (inWeeks) return toIso(addDays(now, Number(inWeeks[1]) * 7));
+  const inDays = text.match(/tra\s+(\d+)\s+giorni|in\s+(\d+)\s+days?/);
+  if (inDays) return toIso(addDays(now, Number(inDays[1] ?? inDays[2])));
+  const inWeeks = text.match(/tra\s+(\d+)\s+settiman|in\s+(\d+)\s+weeks?/);
+  if (inWeeks) return toIso(addDays(now, Number(inWeeks[1] ?? inWeeks[2]) * 7));
 
-  if (/prossimo\s+weekend|weekend\s+prossimo|prossimo\s+fine\s*settimana/.test(text)) {
+  if (/prossimo\s+weekend|weekend\s+prossimo|prossimo\s+fine\s*settimana|next\s+weekend/.test(text)) {
     const day = now.getUTCDay(); // 0=Sun..6=Sat
     const offset = ((6 - day + 7) % 7) || 7; // next Saturday, always in the future
     return toIso(addDays(now, offset));
   }
 
-  // "25 settembre" / "il 9 di ottobre" / "25 settembre 2027" — "di"/"d'" as
-  // a connector is common spoken/written Italian ("il 9 di ottobre") and
-  // was previously unmatched (regression: live repro in ARCHITECTURE.md).
+  // "25 settembre" / "il 9 di ottobre" / "September 25th" / "25 September
+  // 2027" — "di"/"d'" as a connector is common spoken/written Italian
+  // ("il 9 di ottobre"), and day-before-or-after-month covers both IT
+  // ("25 settembre") and EN ("September 25th") orderings.
   const dayMonth = text.match(
-    /(\d{1,2})\s*(?:°|º)?\s*(?:di\s+|d['’]\s*)?(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)(?:\s+(\d{4}))?/,
+    new RegExp(`(\\d{1,2})\\s*(?:°|º|st|nd|rd|th)?\\s*(?:di\\s+|d['’]\\s*|of\\s+)?(${MONTH_NAMES_PATTERN})(?:\\s+(\\d{4}))?`),
   );
-  if (dayMonth) {
-    const day = Number(dayMonth[1]);
-    const month = ITALIAN_MONTHS[dayMonth[2]!]!;
-    let year = dayMonth[3] ? Number(dayMonth[3]) : now.getUTCFullYear();
+  const monthDay = text.match(
+    new RegExp(`(${MONTH_NAMES_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?`),
+  );
+  const m = dayMonth ?? (monthDay && [monthDay[0], monthDay[2], monthDay[1], monthDay[3]]);
+  if (m) {
+    const day = Number(m[1]);
+    const month = MONTHS[m[2]!.toLowerCase()]!;
+    let year = m[3] ? Number(m[3]) : now.getUTCFullYear();
     let candidate = new Date(Date.UTC(year, month - 1, day));
-    if (!dayMonth[3] && candidate.getTime() < Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) {
+    if (!m[3] && candidate.getTime() < Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) {
       year += 1;
       candidate = new Date(Date.UTC(year, month - 1, day));
     }
@@ -88,4 +110,21 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
   }
 
   return null;
+}
+
+/** Pulls a bare month reference ("in June", "a giugno", "verso ottobre")
+ * out of a date phrase that didn't resolve to an exact day — used to bias
+ * candidate selection toward the right month instead of blindly offering
+ * the earliest availability regardless of season (regression: live test,
+ * "three days off in June" got offered a December date because
+ * date_unspecified only ever looked at candidate.minDate). Returns a bare
+ * month number 1-12 — matcher.ts resolves which actual year/date within a
+ * given candidate's availability window, since that depends on the
+ * candidate, not on this phrase alone. */
+export function extractMonthHint(raw: string | null): number | null {
+  if (!raw) return null;
+  const text = raw.trim().toLowerCase();
+  const match = text.match(new RegExp(`\\b(${MONTH_NAMES_PATTERN})\\b`));
+  if (!match) return null;
+  return MONTHS[match[1]!.toLowerCase()]!;
 }

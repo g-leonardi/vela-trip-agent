@@ -592,6 +592,74 @@ conversazione ho trovato **tre** bug distinti, non due:
   ma l'esecuzione e gli errori/correzioni che si vedono nel log sono reali,
   non recitati.
 
+### Cinque richieste di Giuseppe dopo un test dal vivo in inglese sulla customer journey target (2026-09-14 ~17:00)
+
+Giuseppe ha descritto una customer journey specifica a cui puntare (inglese,
+multi-slot in un'unica frase, budget/mese qualitativi, prezzo "confermato"
+prima della conferma finale) e ha dato indicazioni puntuali su cinque punti
+dopo averla confrontata con una conversazione reale. Quattro sono stati
+implementati e verificati dal vivo in questo giro:
+
+1. **Mirroring della lingua** ("possiamo rispondere con la lingua del
+   nostro interlocutore" — sì, va fatto). `interpret()` ora estrae anche
+   la lingua usata dal viaggiatore (solo quando chiara o cambiata, non ad
+   ogni turno) e la persiste in `ConversationState.language`; `say()` la
+   passa al prompt di generazione, sostituendo l'italiano fisso.
+   Verificato dal vivo: una conversazione interamente in inglese ("Vela, I
+   have three days off in June...") ha ricevuto risposte in inglese dal
+   primo turno all'ultimo, senza un solo fallback in italiano.
+2. **Budget qualitativo "medio"** — Giuseppe aveva scritto "somewhere
+   nice, but not crazy expensive" nell'esempio target; testato dal vivo,
+   questo veniva letto come `budgetTier: "low"` (il più economico), non
+   corretto — non è "il più economico possibile", è "ragionevole, né il
+   fondo né lo sfizio". **Aggiunto** `budgetTier: "mid"` con selezione sul
+   prezzo mediano del pool (non il minimo), con esempi espliciti nel
+   prompt per distinguerlo da "low". Verificato dal vivo: la stessa frase
+   ora estrae correttamente `"mid"`.
+3. **Consapevolezza del mese richiesto** — segnalato da Giuseppe come
+   "fondamentale", e corrisponde a un attrito reale vissuto in prima
+   persona nell'uso dell'app. "Three days off in June" veniva
+   correttamente catturato in `dateFromVague` ma **mai usato**: il
+   compromesso `date_unspecified` offriva ciecamente il `minDate` del
+   candidato, che nel caso di test è risultato dicembre, non giugno.
+   **Corretto** con `extractMonthHint()` (estrae un mese anche senza un
+   giorno preciso, in IT ed EN) e `firstDateInMonth()` (trova la prima
+   data reale nel range di disponibilità che cade nel mese richiesto,
+   controllando ogni anno coperto dal range): i candidati con
+   disponibilità nel mese richiesto vengono preferiti nell'ordinamento, e
+   la data offerta nel compromesso è dentro quel mese quando possibile.
+   Verificato dal vivo — con una precisazione onesta: il candidato
+   specifico trovato per "padel a Barcellona" nel catalogo reale aveva
+   una sola data fissa (11 dicembre), zero disponibilità a giugno; in
+   quel caso il fallback dichiarato (proponi comunque, ma è un
+   compromesso esplicito) è scattato correttamente — non è un bug del
+   fix, è il catalogo reale che non aveva un'alternativa a giugno per
+   quel prodotto specifico.
+4. **Profilazione utente demo** — Giuseppe si chiedeva se avesse senso una
+   login/profilazione utente, "magari per questa demo c'è un utente
+   profilato di dft... e poi più in là ogni utente avrà la sua
+   profilazione". **Aggiunto** `DEMO_TRAVELLER` (dati sintetici, mai PII
+   reali, dichiarato esplicitamente come tale nel codice essendo un repo
+   pubblico) come profilo pre-caricato per questa demo, al posto di un
+   `EMPTY_TRAVELLER` che obbligava a raccogliere nome/email/telefono a
+   voce per ogni conversazione — pensato esplicitamente come base
+   concettuale per una futura login/profilazione reale per utente, non
+   come soluzione finale. Verificato dal vivo: con questo profilo, la
+   conversazione salta interamente lo step "collecting_traveller" e va
+   dritta all'apertura del carrello reale dopo la conferma.
+5. Il punto 6 della lista ("via libera per Stripe diretto" e il chiarimento
+   su `paymentType`, da un aggiornamento di Carlo) è documentato in
+   dettaglio in fondo alla sezione 5 (Padronanza API), insieme al bug
+   reale trovato mettendolo in pratica.
+
+Due punti restano esplicitamente aperti, non ancora implementati — vedi
+`OPEN-POINTS.md`: la "shortlist" di città reali su cui ragionare prima
+della scelta finale (punto 2 della lista di Giuseppe — oggi esiste solo il
+meccanismo più semplice a singola città), e lo spostamento della verifica
+prezzo prima della proposta stessa così il prezzo mostrato è già
+"confermato" (punto 5 — solo chiarito con Giuseppe, non ancora approvato
+esplicitamente).
+
 ## 5. Padronanza API (10%)
 - API fornita da Vela: endpoint chiave usati, autenticazione, limiti osservati:
 - Come l'abbiamo integrata / eventuali workaround:
@@ -709,6 +777,60 @@ sbagliata fallisce identico.
   stesso pattern categorico usato per le negoziazioni di business
   ("il pagamento non è disponibile in questo momento, riprovo / lascio i
   tuoi dati" invece di inventare una prenotazione che non è successa).
+
+### Pagamento diretto via Stripe, wireato e verificato dal vivo per davvero (2026-09-14 ~17:35)
+
+Carlo (contatto Vela) ha dato via libera esplicito a creare il PaymentIntent
+Stripe direttamente contro il loro stesso account, invece di aspettare che
+`GET .../payment` venga sistemato — non un workaround inventato da noi, una
+scelta sanzionata. Implementato in `src/stripe/client.ts`:
+`createPaymentIntent()` (con `metadata.checkoutRefId = itineraryId`, la
+stessa chiave usata internamente dal backend HOFJ — verificati dal vivo 38
+PaymentIntent riusciti nello stesso account con questa identica forma prima
+di scrivere il codice) e `confirmPaymentIntent()` (auto-conferma con la
+carta di test ufficiale Stripe `pm_card_visa` — semplificazione dichiarata
+per la demo: in produzione la conferma avverrebbe lato client con Stripe
+Elements, il Worker non deve mai vedere dati di carta reali, e questo
+prototipo non ha ancora quell'integrazione frontend).
+
+`attemptPayment()` prova prima il flusso HOFJ nativo (`getPaymentIntent`,
+noto rotto — 502), e solo se fallisce prova il bypass diretto Stripe.
+
+**Trovato mentre lo si verificava dal vivo — bug vero, non HOFJ**: la prima
+esecuzione end-to-end (2 adulti) si bloccava ripetutamente su un generico
+"il sistema è un po' lento, puoi ripetere?" indistinguibile da un vero
+rate-limit. Isolato con `wrangler tail` + chiamate dirette all'API reale
+(bypassando il Worker): `PUT /pax` con un solo passeggero (`pax-1`) su
+un'itinerary creata per 2 adulti dava 502, dettaglio upstream reale
+`"changePaxDetails.paxNumberChanged"` (HTTP 400 dietro il gateway).
+Verificato leggendo lo snapshot dell'itinerary appena creata: HOFJ
+pre-provisiona uno slot pax per adulto fin dalla creazione (`pax-1`,
+`pax-2` già presenti, il secondo vuoto) — mandarne uno solo alla PUT veniva
+letto come un cambio del numero di passeggeri, non come compilazione nomi.
+**Corretto**: un record pax per ogni adulto (`pax-1` con nome/cognome del
+profilo demo, `pax-2..N` con solo `refId`, coerente con lo stub vuoto che
+HOFJ stesso crea già per loro — non raccogliamo nomi dei compagni di
+viaggio in questa demo). Verificato dal vivo dopo il fix: la pipeline è
+arrivata regolarmente fino a un vero PaymentIntent Stripe `succeeded`
+(730€, `pi_3UFbvbRpam3eRRKb0Cn6XJ12`, `metadata.checkoutRefId` combaciante
+con l'itineraryId reale).
+
+**Aggiornamento sul bloccante `POST /v1/bookings`, dopo il tip di Carlo su
+`paymentType`**: Carlo ha spiegato che `"full"` = pagamento completo subito,
+`"plan"` = acconto + saldo automatico, e ha segnalato un prodotto reale in
+produzione (weebora.com) che usa il modello ad acconto, suggerendo che
+`"plan"` fosse plausibilmente il valore corretto per i prodotti su cui
+stiamo testando. Provato dal vivo, dopo il pagamento Stripe reale riuscito
+sopra: **errore 502 generico identico** a quello già visto con `"full"`.
+Questo chiude definitivamente l'ipotesi "valore sbagliato" — conferma che
+il gateway scarta il campo `paymentType` a prescindere dal suo contenuto,
+prima ancora di inoltrarlo al backend del brand. Non è un problema nostro
+di formato/valore; resta un bug di field-forwarding lato gateway HOFJ, non
+risolvibile da qui. Il pattern già esistente (`stage: "failed"`,
+conversazione ripetibile con "riprova" — che ora ritenta solo la chiamata
+di booking, senza ricreare né ri-addebitare il pagamento Stripe già andato
+a buon fine, verificato dal vivo controllando che non comparisse un
+secondo PaymentIntent dopo un retry) regge comunque la situazione.
 
 ## 6. Comunicazione (5%)
 - Questo documento (aggiornato durante il lavoro, non a posteriori — vedi
