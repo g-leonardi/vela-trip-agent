@@ -97,6 +97,7 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo, con ques
 Regole:
 - Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; i campi non menzionati restano null.
 - "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore (es. "il 25 settembre", "il prossimo weekend", "tra due settimane", "domani") — NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico.
+- "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente, altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
 - "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok...) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città...) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".`;
 
 export async function interpret(
@@ -118,7 +119,7 @@ export async function interpret(
 }
 
 export type SayDirective =
-  | { kind: "ask_slot"; missing: "sport" | "city" | "dateFrom" | "budget" }
+  | { kind: "ask_slot"; missing: "sport" | "city" | "dateFrom" | "budget" | "adults" }
   | { kind: "propose"; ctx: ProposalContext }
   | { kind: "ask_traveller_field"; field: keyof TravellerInfo }
   | { kind: "reverifying" }
@@ -145,6 +146,7 @@ function directiveToInstruction(d: SayDirective): string {
         city: "in che città o zona vuole andare",
         dateFrom: "quando vuole partire",
         budget: "qual è il budget indicativo",
+        adults: "in quante persone viaggia",
       };
       return `Chiedi al viaggiatore, in una frase breve, ${labels[d.missing]}. Non chiedere altro insieme.`;
     }
@@ -153,6 +155,9 @@ function directiveToInstruction(d: SayDirective): string {
       const base = `Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.`;
       if (category === "exact") return `${base} Corrisponde esattamente a quanto chiesto. Chiedi conferma per procedere.`;
       const c = compromise!;
+      if (c.kind === "date_unspecified") {
+        return `${base} Il viaggiatore non ha dato una data precisa (ha detto qualcosa di vago tipo un periodo o un mese). Diglielo con naturalezza — non è un problema, hai semplicemente scelto per lui la prima disponibilità utile, il ${c.offered} — e chiedi conferma o se preferisce specificare un'altra data.`;
+      }
       return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
     }
     case "ask_traveller_field": {

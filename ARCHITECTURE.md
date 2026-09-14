@@ -294,6 +294,83 @@ comprensione e fraseggio in linguaggio naturale:
    site. Corretto lato client (`HofjClient.createItinerary` forza
    `Number(productId)`), con commento che documenta il perché.
 
+### Bug reale scoperto da Giuseppe testando l'app live (2026-09-15 ~15:25)
+
+Non un test scriptato: Giuseppe ha usato l'app vera a voce e si è bloccato
+in un loop — l'agente continuava a chiedere "quando vorresti partire?"
+qualunque cosa rispondesse. Ho letto lo stato reale della sua conversazione
+via `GET /api/state?sessionId=...` e trovato due bug distinti, entrambi
+confermati con test mirati prima di toccare il codice:
+
+1. **Gap nel parser di date deterministico** (`engine/dates.ts`): "il 9 di
+   ottobre" (con "di" come connettore, italiano parlato comunissimo) e
+   "9/10/2026" (formato numerico con slash) tornavano entrambi `null` —
+   la regex giorno+mese non prevedeva "di" tra numero e mese, e non
+   esisteva affatto un parser per date numeriche separate da `/`. Corretto
+   con due aggiunte mirate + test di regressione con le frasi esatte usate
+   da Giuseppe (non frasi inventate).
+2. **Difetto di design più profondo, non solo di parsing**: anche
+   sistemando il parser, il sistema restava rigido — richiedeva una data
+   ESATTA prima di proporre qualunque cosa, mentre una richiesta legittima
+   come "un weekend a novembre" o "nel Nord Europa" (punto sollevato da
+   Giuseppe: il motore dovrebbe trasformare richieste vaghe in query, non
+   bloccarsi su di esse) non produce mai una data esatta per costruzione.
+   La ricerca HOFJ (`/v1/recommendations/search`) non ha mai richiesto una
+   data come filtro obbligatorio — il vincolo era solo nostro, non
+   dell'API. **Decisione**: `dateFrom` non è più un prerequisito rigido
+   per cercare. Se il viaggiatore dà una risposta vaga che non risolve a
+   un giorno preciso, non si continua a richiedere precisione — si passa
+   subito alla ricerca, e `classify()` propone la prima disponibilità del
+   candidato migliore come un compromesso esplicito di categoria
+   `date_unspecified` ("non hai dato una data precisa, ti propongo il
+   [primo slot libero], va bene?"), riusando esattamente lo stesso pattern
+   di conferma esplicita già usato per prezzo/data fuori target — non un
+   meccanismo nuovo, la stessa negoziazione categorica applicata a un
+   terzo caso. Al "sì", la data implicita viene scritta in `state.slots`
+   prima di aprire il carrello reale, quindi la prenotazione finale usa
+   comunque una data concreta.
+
+### Policy di precisione, dettata da Giuseppe dopo il bug qui sopra (2026-09-15 ~15:35)
+
+Il bug della data ha fatto emergere una domanda più generale: quanto
+possono essere vaghi i viaggiatori su ciascuna dimensione (località, date,
+budget, insegnanti/attività, numero di persone), e quando è l'agente a
+dover decidere al posto loro dato che prenota per davvero? Regola esplicita
+data da Giuseppe, non dedotta da me:
+
+- **Budget e numero di persone (`adults`) non si decidono mai.** Se non
+  detti esplicitamente, si chiedono — punto. Non c'è un default onesto per
+  "quante persone" o "quanto vuoi spendere": inventarlo significherebbe
+  prenotare/pagare qualcosa che il viaggiatore non ha davvero autorizzato.
+- **Località, date, insegnante/attività possono essere vaghi**: l'agente,
+  che prenota per davvero, deve poter decidere lui quando serve — ma
+  SEMPRE con una proposta esplicita da confermare, mai come tabella di
+  scelta nascosta dietro le quinte ("non voglio mascherare tabelle con
+  scelta nascoste nell'app" — citazione diretta). È esattamente il pattern
+  già costruito per `date_unspecified`: non una lista di opzioni tra cui
+  scegliere, una singola proposta con la scelta già fatta e dichiarata,
+  che il viaggiatore può accettare o rifiutare.
+
+**Gap trovato applicando la policy al codice esistente**: `adults`
+defaultava silenziosamente a 1 senza mai essere chiesto — violazione diretta
+della prima regola, introdotta ancora prima che la policy fosse dichiarata
+esplicitamente (un default "innocuo" scritto senza pensarci). Corretto:
+`Slots.adults` è ora `number | null` (non più `number` con default),
+aggiunto a `REQUIRED_TRIP_SLOTS`, mai inventato da `interpret()` nemmeno
+quando sembra deducibile dal contesto (regola esplicita nel prompt:
+"tutta la famiglia" senza un numero resta `null`, va chiesto).
+
+**Cosa mancava anche su insegnanti/attività**: `preferences` veniva
+raccolto in conversazione ma non influenzava mai la ricerca reale.
+Verificato dal vivo che i filtri tipizzati di HOFJ (`goal`, `style`,
+`bestForLevel`, presenti nei dati prodotto) vengono ignorati silenziosamente
+se passati come query param sull'endpoint di ricerca — l'unica leva reale
+resta il `keyword` testuale. `engine/matcher.ts` ora prova prima una
+ricerca con `preferences` incluso nel keyword, e se torna vuota (il
+matching testuale può azzerare risultati validi tanto quanto affinarli)
+ripiega sulla ricerca semplice città+sport — stesso pattern di degradazione
+già usato per il fallback Weebora sul padel.
+
 **Verifica dal vivo della ri-verifica silenziosa** (proprio il meccanismo
 richiesto dal brief): nel primo test end-to-end, il prezzo mostrato in fase
 di ricerca (365€, solo l'attività tennis) differiva dal totale reale del

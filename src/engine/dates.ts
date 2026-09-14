@@ -40,6 +40,20 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
   const isoMatch = text.match(/(\d{4})-(\d{2})-(\d{2})/);
   if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
 
+  // "9/10/2026", "9-10-2026", "09.10.2026" — Italian convention is
+  // day/month/year, not the US month/day/year (regression: "9/10/2026"
+  // typed literally by a traveller was silently dropped, see
+  // ARCHITECTURE.md for the live repro).
+  const slashMatch = text.match(/\b(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\b/);
+  if (slashMatch) {
+    const day = Number(slashMatch[1]);
+    const month = Number(slashMatch[2]);
+    const year = Number(slashMatch[3]);
+    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+      return toIso(new Date(Date.UTC(year, month - 1, day)));
+    }
+  }
+
   if (/\boggi\b/.test(text)) return toIso(now);
   if (/\bdomani\b/.test(text)) return toIso(addDays(now, 1));
   if (/\bdopodomani\b/.test(text)) return toIso(addDays(now, 2));
@@ -55,9 +69,11 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
     return toIso(addDays(now, offset));
   }
 
-  // "25 settembre" / "25 settembre 2027" / "settembre 25"
+  // "25 settembre" / "il 9 di ottobre" / "25 settembre 2027" — "di"/"d'" as
+  // a connector is common spoken/written Italian ("il 9 di ottobre") and
+  // was previously unmatched (regression: live repro in ARCHITECTURE.md).
   const dayMonth = text.match(
-    /(\d{1,2})\s*(?:°|º)?\s*(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)(?:\s+(\d{4}))?/,
+    /(\d{1,2})\s*(?:°|º)?\s*(?:di\s+|d['’]\s*)?(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)(?:\s+(\d{4}))?/,
   );
   if (dayMonth) {
     const day = Number(dayMonth[1]);

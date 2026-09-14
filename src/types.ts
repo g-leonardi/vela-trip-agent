@@ -18,7 +18,10 @@ export interface Slots {
   dateFrom: string | null; // YYYY-MM-DD, requested start
   dateTo: string | null; // YYYY-MM-DD, requested end (optional, inferred from product duration if absent)
   budget: number | null; // EUR, total for the trip
-  adults: number; // defaults to 1
+  /** Party size. Unlike city/date, this is never inferred or defaulted —
+   * the traveller must state it explicitly, same as budget. See
+   * ARCHITECTURE.md: precision policy decided 2026-09-15. */
+  adults: number | null;
   preferences: string | null; // free text: "maestro", "principiante", "vista mare", ...
 }
 
@@ -28,7 +31,7 @@ export const EMPTY_SLOTS: Slots = {
   dateFrom: null,
   dateTo: null,
   budget: null,
-  adults: 1,
+  adults: null,
   preferences: null,
 };
 
@@ -82,8 +85,13 @@ export interface Candidate {
 export interface ProposalContext {
   candidate: Candidate;
   category: ConfidenceCategory;
-  /** Set when category === "compromise": what exactly doesn't match. */
-  compromise: { kind: "price" | "date"; requested: string; offered: string } | null;
+  /** Set when category === "compromise": what exactly doesn't match.
+   * "date_unspecified" is distinct from "date": the traveller never gave a
+   * specific day at all (e.g. "un weekend a novembre") rather than giving
+   * one that didn't fit the candidate's window — different enough to
+   * phrase differently ("ti propongo il primo slot libero" vs "non riesco
+   * al giorno X, riesco al Y"). `requested` is empty for that case. */
+  compromise: { kind: "price" | "date" | "date_unspecified"; requested: string; offered: string } | null;
 }
 
 export interface ChatMessage {

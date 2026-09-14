@@ -66,6 +66,19 @@ export function classify(slots: Slots, candidates: SearchProduct[], rejectedProd
         compromise = { kind: "date", requested: slots.dateFrom, offered: nearest };
       }
     }
+  } else {
+    // No date at all is not the same as a wrong date: a vague ask ("un
+    // weekend a novembre", or simply nothing yet) shouldn't block a
+    // proposal the way "collecting" used to (see ARCHITECTURE.md — live
+    // regression where the dialogue just re-asked "when?" forever instead
+    // of ever suggesting something). Offer the candidate's own earliest
+    // availability as the concrete date, framed as a compromise so it
+    // still gets an explicit confirmation rather than being booked
+    // silently on the traveller's behalf.
+    if (category !== "compromise") {
+      category = "compromise";
+      compromise = { kind: "date_unspecified", requested: "", offered: candidate.minDate };
+    }
   }
 
   return { candidate, category, compromise };
@@ -74,9 +87,17 @@ export function classify(slots: Slots, candidates: SearchProduct[], rejectedProd
 /** Builds the HOFJ search keyword from the slots we have. Free-text
  * `keyword` matches across title/category/destination/venue server-side —
  * more forgiving than requiring an exact destination slug from the
- * traveller's own words. */
-function buildKeyword(slots: Slots): string {
-  return [slots.city, slots.sport].filter(Boolean).join(" ");
+ * traveller's own words. `withPreferences` folds in free-text asks like
+ * "bravo insegnante" or "principianti" — verified live that HOFJ's typed
+ * filters (goal/style/bestForLevel, present on product records) are
+ * silently ignored as query params on this endpoint, so keyword is the
+ * only real lever. That's also exactly why it's optional: extra terms
+ * can just as easily zero out real matches as sharpen them (free-text
+ * matching, not semantic), so callers try with it first and fall back
+ * without. */
+function buildKeyword(slots: Slots, withPreferences: boolean): string {
+  const parts = [slots.city, slots.sport, withPreferences ? slots.preferences : null];
+  return parts.filter(Boolean).join(" ");
 }
 
 // A handful of IT/EN city-name pairs, since the catalog is in one locale
@@ -113,6 +134,20 @@ function filterToMatchingCity(slots: Slots, candidates: SearchProduct[]): Search
 
 const FALLBACK_BRAND = "weebora.com";
 
+/** Searches one brand, preferring a preferences-enriched keyword but
+ * falling back to city+sport alone if that returns nothing after city
+ * filtering — same "try the sharper query, degrade gracefully" shape as
+ * the cross-brand padel fallback below. */
+async function searchOneBrand(hofj: HofjClient, slots: Slots, brand?: string): Promise<SearchProduct[]> {
+  if (slots.preferences) {
+    const withPrefs = await hofj.search({ keyword: buildKeyword(slots, true), topN: 15, brand });
+    const matched = filterToMatchingCity(slots, withPrefs.data.products);
+    if (matched.length > 0) return matched;
+  }
+  const plain = await hofj.search({ keyword: buildKeyword(slots, false) || undefined, topN: 15, brand });
+  return filterToMatchingCity(slots, plain.data.products);
+}
+
 /** Resolves slots to a ranked candidate list. Terrarossa is the tennis/padel
  * brand of record; when the traveller asked for padel specifically and
  * Terrarossa comes up empty, we also check Weebora, which carries its own
@@ -122,14 +157,11 @@ export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<
   // (available in a different week) is exactly the "compromise" case the
   // dialogue should be able to offer, not silently drop. classify() does
   // the date comparison itself once we have the ranked candidates.
-  const keyword = buildKeyword(slots);
-  const primary = await hofj.search({ keyword: keyword || undefined, topN: 15 });
-  const primaryMatched = filterToMatchingCity(slots, primary.data.products);
+  const primaryMatched = await searchOneBrand(hofj, slots);
   if (primaryMatched.length > 0) return primaryMatched;
 
   if (slots.sport === "padel") {
-    const fallback = await hofj.search({ keyword: keyword || undefined, topN: 15, brand: FALLBACK_BRAND });
-    const fallbackMatched = filterToMatchingCity(slots, fallback.data.products);
+    const fallbackMatched = await searchOneBrand(hofj, slots, FALLBACK_BRAND);
     if (fallbackMatched.length > 0) return fallbackMatched;
   }
 

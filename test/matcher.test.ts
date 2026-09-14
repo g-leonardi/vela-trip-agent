@@ -70,6 +70,30 @@ describe("classify", () => {
     const result = classify(baseSlots, [a, b], ["1"]);
     expect(result?.candidate.productId).toBe("2");
   });
+
+  it("proposes the candidate's earliest availability when no date was given at all, as a compromise (regression: live loop where the dialogue just re-asked 'when?' forever instead of ever proposing)", () => {
+    const slots: Slots = { ...baseSlots, budget: 400 }; // no dateFrom
+    const result = classify(slots, [product({ price: 365, minDate: "2026-10-09" })], []);
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise).toEqual({ kind: "date_unspecified", requested: "", offered: "2026-10-09" });
+  });
+
+  it("lets an unresolved price compromise take priority over date_unspecified in the message (both true, but only one gets said)", () => {
+    const slots: Slots = { ...baseSlots, budget: 100 }; // no dateFrom, price will also be off
+    const result = classify(slots, [product({ price: 150, minDate: "2026-10-09" })], []);
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise?.kind).toBe("price");
+  });
+
+  it("stays exact when a date wasn't asked about because price is fine and dateFrom truly wasn't relevant to this test's candidate window — still flags date_unspecified since no date is not 'no constraint'", () => {
+    const slots: Slots = { ...baseSlots, budget: 1000 }; // generous budget, no dateFrom
+    const result = classify(slots, [product({ price: 200 })], []);
+    // No date at all is never "exact" — the system is choosing a date on
+    // the traveller's behalf, which always deserves an explicit compromise
+    // confirmation, never a silent "matches exactly".
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise?.kind).toBe("date_unspecified");
+  });
 });
 
 function fakeHofjClient(byBrand: Record<string, SearchProduct[]>): HofjClient {
@@ -109,6 +133,37 @@ describe("searchCandidates", () => {
     const results = await searchCandidates(hofj, { ...baseSlots, sport: "padel", city: "Valencia" });
     expect(results).toHaveLength(1);
     expect(results[0]!.productId).toBe(9);
+  });
+
+  it("tries a preferences-enriched keyword first, falls back to plain city+sport if that returns nothing", async () => {
+    const match = product({ productId: 3, primaryDestination: "rome-copy", title: "Roma Tennis Experience" });
+    const search = vi.fn(async (params: { keyword?: string }) => ({
+      data: {
+        total: params.keyword?.includes("bravo insegnante") ? 0 : 1,
+        products: params.keyword?.includes("bravo insegnante") ? [] : [match],
+      },
+    }));
+    const hofj = { search } as unknown as HofjClient;
+
+    const results = await searchCandidates(hofj, {
+      ...baseSlots,
+      city: "Roma",
+      preferences: "bravo insegnante",
+    });
+
+    expect(results).toHaveLength(1);
+    expect(search).toHaveBeenCalledTimes(2); // enriched attempt, then plain fallback
+    expect(search.mock.calls[0]![0].keyword).toContain("bravo insegnante");
+    expect(search.mock.calls[1]![0].keyword).not.toContain("bravo insegnante");
+  });
+
+  it("skips the preferences attempt entirely when none were given (no wasted call)", async () => {
+    const match = product({ productId: 4 });
+    const search = vi.fn(async () => ({ data: { total: 1, products: [match] } }));
+    const hofj = { search } as unknown as HofjClient;
+
+    await searchCandidates(hofj, { ...baseSlots, city: "Roma" });
+    expect(search).toHaveBeenCalledTimes(1);
   });
 
   it("does not fall back to Weebora for tennis", async () => {

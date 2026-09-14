@@ -12,11 +12,12 @@ import {
   type TravellerInfo,
 } from "./types";
 
-const REQUIRED_TRIP_SLOTS: (keyof Pick<Slots, "sport" | "city" | "dateFrom" | "budget">)[] = [
+const REQUIRED_TRIP_SLOTS: (keyof Pick<Slots, "sport" | "city" | "dateFrom" | "budget" | "adults">)[] = [
   "sport",
   "city",
   "dateFrom",
   "budget",
+  "adults",
 ];
 
 const REQUIRED_TRAVELLER_FIELDS: (keyof TravellerInfo)[] = ["firstName", "lastName", "email", "phone", "city"];
@@ -120,9 +121,18 @@ export class ConversationDO extends DurableObject<Env> {
       state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
       state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
 
+      // The traveller said *something* about a date, but it wasn't
+      // specific enough to resolve to one calendar day (e.g. "un weekend
+      // di novembre") — worth telling them that, instead of silently
+      // re-asking the same generic question, which reads as "didn't hear
+      // you" when it actually did (regression: live user hit exactly this
+      // with vague month-only answers, repeated 3+ times).
+      const vagueDateHeard =
+        typeof dateFromText === "string" && resolvedDates.dateFrom === null ? dateFromText : null;
+
       switch (state.stage) {
         case "collecting":
-          reply = await this.runCollecting(state);
+          reply = await this.runCollecting(state, vagueDateHeard);
           break;
         case "proposing":
           reply = await this.runProposing(state, interpretation.decision);
@@ -172,8 +182,18 @@ export class ConversationDO extends DurableObject<Env> {
     return null;
   }
 
-  private async runCollecting(state: ConversationState): Promise<string> {
+  private async runCollecting(state: ConversationState, vagueDateHeard: string | null = null): Promise<string> {
     const missing = this.firstMissingTripSlot(state.slots);
+    // A vague date answer ("un weekend a novembre") still counts as an
+    // answer: don't keep re-asking for precision the traveller may not
+    // have. classify()'s date_unspecified compromise turns straight into
+    // a concrete proposal ("non hai una data precisa? ti propongo il primo
+    // slot libero, il 9 ottobre") — that message does double duty as both
+    // acknowledgment and offer, which is a better turn than "let me ask
+    // again" followed by a search on some later turn.
+    if (missing === "dateFrom" && vagueDateHeard) {
+      return this.searchAndPropose(state);
+    }
     if (missing) {
       return say(this.env, { kind: "ask_slot", missing });
     }
@@ -194,6 +214,15 @@ export class ConversationDO extends DurableObject<Env> {
 
   private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear"): Promise<string> {
     if (decision === "yes" && state.proposal) {
+      // The traveller never gave a specific date (date_unspecified
+      // compromise) — commit to the candidate's own earliest availability
+      // now that they've confirmed it, so the real booking call further
+      // down the pipeline has a startDate to send. Only fires when
+      // dateFrom is still null, so it never overwrites a date the
+      // traveller actually gave.
+      if (state.slots.dateFrom === null) {
+        state.slots.dateFrom = state.proposal.candidate.minDate;
+      }
       state.stage = "collecting_traveller";
       // Traveller info may already be filled from an earlier attempt (e.g.
       // a price-changed re-confirmation loop) — don't re-ask what we
@@ -227,7 +256,7 @@ export class ConversationDO extends DurableObject<Env> {
     const created = await this.hofj.createItinerary({
       productId: candidate.productId,
       startDate: state.slots.dateFrom!,
-      adults: state.slots.adults,
+      adults: state.slots.adults!,
       rooms: 1,
     });
     state.itineraryId = created.data.itineraryId;

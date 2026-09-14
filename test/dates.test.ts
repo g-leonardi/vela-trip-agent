@@ -50,4 +50,14 @@ describe("resolveDate", () => {
   it("returns null for unparseable free text rather than guessing", () => {
     expect(resolveDate("appena possibile", NOW)).toBeNull();
   });
+
+  it("handles 'di' as a connector between day and month (regression: live user said \"il 9 di ottobre\" twice, both silently dropped)", () => {
+    expect(resolveDate("il 9 di ottobre", NOW)).toBe("2026-10-09");
+    expect(resolveDate("9 di ottobre", NOW)).toBe("2026-10-09");
+  });
+
+  it("resolves a slash-separated DD/MM/YYYY date, Italian convention not US (regression: live user typed \"9/10/2026\", silently dropped)", () => {
+    expect(resolveDate("9/10/2026", NOW)).toBe("2026-10-09");
+    expect(resolveDate("09-10-2026", NOW)).toBe("2026-10-09");
+  });
 });
