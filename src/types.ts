@@ -266,4 +266,13 @@ export interface ConversationState {
    * just makes the "che sport preferisci?" question a confirmable
    * suggestion instead of a blind one. */
   preferredSportHint: "tennis" | "padel" | null;
+  /** The current proposal's product-level marketing description (see
+   * HofjClient.getProduct), fetched lazily and cached the first time the
+   * traveller asks an ad-hoc question about it ("cosa include il
+   * pacchetto?") — not fetched up front for every proposal, since most
+   * proposals never get a follow-up question and a product-detail call
+   * for each one would be pure waste. Reset to null whenever a NEW
+   * proposal replaces the current one, so a later question never answers
+   * from a stale, different candidate's description. */
+  productDescription: string | null;
 }

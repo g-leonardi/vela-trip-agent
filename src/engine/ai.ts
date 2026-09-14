@@ -86,7 +86,7 @@ interface RawInterpretation {
     dateToText?: string | null;
   };
   travellerUpdates: Partial<TravellerInfo>;
-  decision: "yes" | "no" | "unclear";
+  decision: "yes" | "no" | "unclear" | "question";
   /** A human-readable language name ("italiano", "English", "español"...)
    * — only set when it's clear or has changed, so it doesn't get
    * re-detected (and re-spent) every single turn. Null keeps whatever
@@ -100,7 +100,7 @@ Rispondi ESCLUSIVAMENTE con un oggetto JSON, nessun testo prima o dopo, con ques
 {
   "slotUpdates": { "sport": "tennis"|"padel"|null, "city": string|null, "dateFromText": string|null, "dateToText": string|null, "budget": number|null, "budgetTier": "low"|"mid"|"high"|null, "adults": number|null, "preferences": string|null },
   "travellerUpdates": { "firstName": string|null, "lastName": string|null, "email": string|null, "phone": string|null, "city": string|null, "postalCode": string|null, "countryCode": string|null },
-  "decision": "yes"|"no"|"unclear",
+  "decision": "yes"|"no"|"unclear"|"question",
   "language": string|null
 }
 Regole:
@@ -108,7 +108,7 @@ Regole:
 - "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore, NELLA LINGUA in cui l'ha detta (es. "il 25 settembre", "next weekend", "in three days") — NON tradurla, NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico che riconosce sia italiano sia inglese.
 - "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1, "I'm going with Francesca" = 2) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
 - "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco", "cheap" → "low". Espressioni come "carino ma non troppo caro", "nella media", "niente di esagerato ma neanche il più economico", "nice, but not crazy expensive", "reasonable" → "mid" (NON "low": non sta chiedendo il più economico, sta chiedendo qualcosa di ragionevole). Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato", "money is no object" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
-- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok..., yes, sure, sounds good) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città..., that's too expensive) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se il messaggio non è né l'uno né l'altro (es. sta solo dando un'informazione), usa "unclear".
+- "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok..., yes, sure, sounds good) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città..., that's too expensive) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se invece il viaggiatore sta facendo una DOMANDA informativa sulla proposta appena fatta (es. "cosa include il pacchetto?", "com'è l'hotel?", "posso cancellare?", "what's included?") — non un sì/no, una vera richiesta di sapere di più — usa "question". Se il messaggio non è nessuno di questi (es. sta solo dando un'informazione su un altro aspetto del viaggio), usa "unclear".
 - Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).
 - "language": il nome della lingua in cui il viaggiatore sta scrivendo ADESSO, in italiano (es. "italiano", "inglese", "spagnolo", "francese", "tedesco"...). Valorizzalo solo se il messaggio è abbastanza lungo/chiaro da capirlo con sicurezza, o se sembra diverso dalla lingua usata nei messaggi precedenti (cambio di lingua a metà conversazione) — altrimenti lascialo null, non serve ripeterlo ogni turno.`;
 
@@ -155,6 +155,18 @@ export type SayDirective =
       hint?: string;
     }
   | { kind: "propose"; ctx: ProposalContext; precededBy?: "rejected" | "unavailable" }
+  | {
+      kind: "answer_proposal_question";
+      question: string;
+      ctx: ProposalContext;
+      /** The proposed product's own marketing description (see
+       * HofjClient.getProduct) — the only source of truth for anything
+       * beyond price/dates/duration, which are already in `ctx`. Null
+       * when the lookup failed or the product has none; the answer must
+       * still be honest about that, never invent detail to fill the
+       * gap. */
+      description: string | null;
+    }
   | {
       kind: "ask_traveller_field";
       field: keyof TravellerInfo;
@@ -222,6 +234,17 @@ function directiveToInstruction(d: SayDirective): string {
         return `${base} Il viaggiatore non ti ha mai detto un budget. Diglielo con naturalezza — non è un problema, hai scelto tu il pacchetto più economico tra quelli pertinenti, a ${c.offered} — e chiedi conferma o se preferisce dirti un budget preciso.`;
       }
       return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
+    }
+    case "answer_proposal_question": {
+      const { candidate } = d.ctx;
+      const facts = `Titolo: "${candidate.title}", venue ${candidate.venue}, città ${candidate.city}, prezzo ${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}, ${candidate.durationDays} giorni, date disponibili tra ${candidate.minDate} e ${candidate.maxDate}.`;
+      const descriptionBlock = d.description
+        ? `Descrizione ufficiale del pacchetto (unica fonte per qualunque dettaglio oltre ai fatti sopra): """${d.description}"""`
+        : `Nessuna descrizione dettagliata disponibile per questo pacchetto oltre ai fatti sopra.`;
+      return `Il viaggiatore ha fatto questa domanda sulla proposta appena fatta: "${d.question}"
+Fatti noti: ${facts}
+${descriptionBlock}
+Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non copre esattamente quello che chiede, dillo onestamente ("non ho il dettaglio esatto su questo, ma posso dirti che...") invece di inventare o generalizzare. NON ripetere l'intera proposta da capo, rispondi solo alla domanda in modo naturale, poi chiudi ricordando in una frase che sei ancora in attesa di sapere se vuole procedere con la prenotazione.`;
     }
     case "ask_traveller_field": {
       const labels: Record<string, string> = {

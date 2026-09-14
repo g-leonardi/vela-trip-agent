@@ -381,29 +381,48 @@ sappiamo con certezza quale campo annidato HOFJ abbia rifiutato) invece di
 terminare la conversazione, con un riconoscimento onesto del perché si
 sta richiedendo di nuovo, non un riavvio silenzioso.
 
-### "Cosa include il pacchetto?" — la domanda è stata ignorata, e i dati per rispondere esistono già (stesso sessionId)
+### "Cosa include il pacchetto?" — implementato (2026-09-15 ~00:05)
 
-Nella stessa conversazione, il viaggiatore ha chiesto "Cosa include il
-pacchetto" dopo la proposta — l'agente ha ignorato la domanda e ha
-ripetuto lo stesso riepilogo di prima, senza aggiungere nulla. **Non è un
-bug isolato da correggere al volo**: la macchina a stati attuale non ha
-affatto un concetto di "rispondi a una domanda ad hoc sulla proposta
-corrente" — lo stage "proposing" interpreta ogni messaggio solo come
-`yes`/`no`/`unclear` rispetto alla proposta, mai come una domanda
-informativa a sé.
+Nella stessa conversazione, il viaggiatore aveva chiesto "Cosa include il
+pacchetto" dopo la proposta — l'agente ignorava la domanda e ripeteva lo
+stesso riepilogo, senza rispondere. Non era un bug isolato: la macchina a
+stati non aveva affatto un concetto di "rispondi a una domanda ad hoc
+sulla proposta corrente" — lo stage "proposing" interpretava ogni
+messaggio solo come `yes`/`no`/`unclear`.
 
-Verificato dal vivo che i dati per rispondere esistono già, ricchi, nella
-risposta reale di `GET /v1/itineraries/{id}` — solo mai catturati dal
-nostro `ItinerarySnapshot` (che oggi legge solo prezzo/date/checkout):
-`travelDetail.description` (markdown descrittivo), `travelDetail.
-includedList`/`excludedList` (voci puntuali, es. "Hotel con prima
-colazione", "3 partite di padel", escluso "Voli"), `accommodation`
-(struttura, rating), `activities`, `travelProgram` (programma giorno per
-giorno), `cancellationPolicy`. Costruire una vera capacità di "rispondi a
-domande sul pacchetto" è una feature reale (un nuovo tipo di intento
-riconosciuto durante "proposing", più il parsing di questi campi nel
-client HOFJ) — documentata qui come gap aperto, non ancora implementata:
-vedi `OPEN-POINTS.md`.
+**Implementato su richiesta esplicita di Giuseppe**:
+1. **Nuovo intento riconosciuto**: `interpret()` ora distingue una vera
+   domanda informativa ("cosa include", "com'è l'hotel", "posso
+   cancellare") da un sì/no/non chiaro, con `decision: "question"`.
+2. **Nuovo endpoint prodotto, non itinerario**: `HofjClient.getProduct()`
+   (`GET /v1/products/{id}`) — deliberatamente a livello di prodotto, non
+   di carrello, per non contraddire la decisione già presa di non aprire
+   un itinerary reale per ogni proposta (vedi sezione 1, scope-cut). La
+   descrizione ricca (`description`, markdown) esiste già qui, senza
+   bisogno di un vero carrello — verificato dal vivo che coincide con lo
+   stesso testo visto in `travelDetail.description` sull'itinerary, solo
+   accessibile prima, sul prodotto stesso.
+3. **Recuperata pigramente e in cache**: solo alla prima domanda su
+   quella proposta (non per ogni proposta fatta — la maggior parte non
+   riceve mai una domanda di follow-up), e invalidata automaticamente
+   appena una nuova proposta sostituisce quella corrente
+   (`state.productDescription`).
+4. **Onestà per costruzione**: la risposta usa SOLO la descrizione reale
+   e i fatti già noti (prezzo/date/durata) — se la domanda tocca
+   qualcosa che la descrizione non copre (verificato dal vivo con "posso
+   cancellare gratuitamente?", che il prodotto non specifica), lo dice
+   onestamente invece di inventare, poi richiama in una frase che è
+   ancora in attesa di un sì/no. Resta in stage "proposing": rispondere
+   a una domanda non è una decisione, il viaggiatore deve ancora
+   confermare o rifiutare dopo.
+
+Verificato dal vivo end-to-end: "Cosa include il pacchetto?" ha ricevuto
+una risposta reale e specifica ("tre ore di lezioni con un allenatore
+certificato... due notti in hotel quattro stelle... aperitivo panoramico
+a Trastevere...", tutto testo autentico dalla descrizione del prodotto),
+poi un "procedi pure" successivo è passato correttamente a
+`collecting_traveller` — la domanda non ha rotto il flusso di
+conferma.
 
 ## 4. Metodo agentico (15%)
 

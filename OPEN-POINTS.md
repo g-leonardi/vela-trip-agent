@@ -247,21 +247,20 @@ come rete di sicurezza generale — su un 400 si torna a raccogliere i
 dati del viaggiatore con un riconoscimento onesto, invece di terminare
 tutto. Vedi `ARCHITECTURE.md` per i dettagli.
 
-## "Cosa include il pacchetto?" — non ancora implementato, dati già disponibili
+## ~~"Cosa include il pacchetto?" — non ancora implementato~~ — IMPLEMENTATO (2026-09-15 ~00:05)
 
-Stessa sessione: una domanda informativa legittima sulla proposta
-("cosa include il pacchetto?") è stata ignorata — la macchina a stati
-oggi interpreta ogni messaggio in stage "proposing" solo come
-`yes`/`no`/`unclear`, non c'è alcun concetto di "rispondi a una domanda
-ad hoc". Verificato dal vivo che HOFJ restituisce già tutto il necessario
-per rispondere (`travelDetail.description`, `includedList`/
-`excludedList`, `accommodation`, `travelProgram` giorno per giorno,
-`cancellationPolicy`) — semplicemente non lo leggiamo mai, il nostro
-`ItinerarySnapshot` cattura solo prezzo/date/checkout. **Non implementato
-in questa sessione** — richiederebbe un nuovo tipo di intento riconosciuto
-durante "proposing" (oltre a yes/no/unclear) e il parsing di questi campi
-nel client HOFJ. In attesa di decisione di Giuseppe su se e quando
-costruirlo.
+Giuseppe ha chiesto di costruirla. Fatto: nuovo intento `decision:
+"question"` in `interpret()`, nuovo `HofjClient.getProduct()`
+(`GET /v1/products/{id}`, a livello di prodotto — non serve un vero
+carrello, coerente con la decisione di non aprirne uno per ogni
+proposta), recuperato pigramente solo alla prima domanda e messo in
+cache su `state.productDescription` finché la proposta resta la stessa.
+La risposta usa solo la descrizione reale + i fatti già noti, e dice
+onestamente quando non ha un dettaglio specifico invece di inventarlo —
+verificato dal vivo con una domanda sulla cancellazione, non coperta
+dalla descrizione. Resta in stage "proposing" dopo la risposta, il
+"procedi pure" successivo funziona normalmente. Vedi `ARCHITECTURE.md`
+per il dettaglio ed esempi reali verificati.
 
 ## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 

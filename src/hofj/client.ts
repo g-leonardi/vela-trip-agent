@@ -33,6 +33,15 @@ export interface CreateItineraryResponse {
   data: { itineraryId: string };
 }
 
+export interface ProductDetail {
+  data: {
+    id: number;
+    title: string;
+    shortDescription: string | null;
+    description: string | null;
+  };
+}
+
 export interface ItinerarySnapshot {
   data: {
     productId: string;
@@ -255,5 +264,18 @@ export class HofjClient {
 
   getQuota(): Promise<{ data: { remainingInWindow: number; limitPerMinute: number } }> {
     return this.request("GET", "/v1/quota");
+  }
+
+  /** Product-level detail (marketing description) — deliberately NOT the
+   * same as getItinerary()'s richer travelDetail.includedList/
+   * cancellationPolicy, which only exist once a real cart is opened.
+   * Used to answer an ad-hoc question about the current proposal
+   * ("cosa include il pacchetto?") WITHOUT opening a real itinerary for
+   * every proposal just to answer a question — Giuseppe's explicit call
+   * (2026-09-14, see ARCHITECTURE.md scope-cut) that a real cart only
+   * gets opened after confirmation, never during a still-negotiable
+   * proposal. */
+  getProduct(productId: number | string, brand: string): Promise<ProductDetail> {
+    return this.request("GET", `/v1/products/${productId}`, { brand });
   }
 }

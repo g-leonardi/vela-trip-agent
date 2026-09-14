@@ -54,6 +54,7 @@ function initialState(): ConversationState {
     householdSizeHint: null,
     economicTierHint: null,
     preferredSportHint: null,
+    productDescription: null,
   };
 }
 
@@ -249,7 +250,7 @@ export class ConversationDO extends DurableObject<Env> {
           reply = await this.runCollecting(state);
           break;
         case "proposing":
-          reply = await this.runProposing(state, interpretation.decision);
+          reply = await this.runProposing(state, interpretation.decision, text);
           break;
         case "collecting_traveller":
           reply = await this.runCollectingTraveller(state);
@@ -462,10 +463,42 @@ export class ConversationDO extends DurableObject<Env> {
     state.budgetAskAttempts = 0;
     state.proposal = ctx;
     state.stage = "proposing";
+    // A new candidate means any cached description belongs to a different
+    // product now — never answer a question about THIS proposal using
+    // stale detail fetched for a previous, possibly rejected one.
+    state.productDescription = null;
     return this.say(state, { kind: "propose", ctx, precededBy });
   }
 
-  private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear"): Promise<string> {
+  /** Ad-hoc informational question about the current proposal ("cosa
+   * include il pacchetto?") — fetched lazily (only when actually asked,
+   * not for every proposal) via HofjClient.getProduct(), product-level so
+   * it never needs a real itinerary/cart (see Giuseppe's explicit
+   * decision against opening one before confirmation, ARCHITECTURE.md).
+   * Cached on state.productDescription for the rest of this same
+   * proposal so a second question doesn't re-fetch. Stays in "proposing"
+   * — answering a question is not a decision either way, the traveller
+   * still owes a real yes/no afterward. */
+  private async answerProposalQuestion(state: ConversationState, question: string): Promise<string> {
+    const ctx = state.proposal!;
+    if (state.productDescription === null) {
+      try {
+        const detail = await this.hofj.getProduct(ctx.candidate.productId, ctx.candidate.brand);
+        state.productDescription = detail.data.description ?? detail.data.shortDescription ?? "";
+      } catch (err) {
+        if (err instanceof HofjApiError) {
+          console.error("getProduct failed:", err.status, err.detail.slice(0, 200));
+        }
+        state.productDescription = ""; // don't retry every question this turn; answer_proposal_question degrades gracefully on ""
+      }
+    }
+    return this.say(state, { kind: "answer_proposal_question", question, ctx, description: state.productDescription || null });
+  }
+
+  private async runProposing(state: ConversationState, decision: "yes" | "no" | "unclear" | "question", text: string): Promise<string> {
+    if (decision === "question" && state.proposal) {
+      return this.answerProposalQuestion(state, text);
+    }
     if (decision === "yes" && state.proposal) {
       // The traveller never gave a specific date (date_unspecified
       // compromise) — commit to the candidate's own earliest availability
