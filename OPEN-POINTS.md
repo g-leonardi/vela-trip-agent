@@ -86,24 +86,29 @@
   salta interamente lo step "collecting_traveller" fino all'apertura del
   carrello reale.
 
-## Ancora aperto, dalla lista di Giuseppe del 2026-09-14
+## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 
-- **"Shortlist" di città reali prima della scelta finale** (punto 2 della
-  lista): Giuseppe è d'accordo che l'agente decida alla fine, ma vuole che
-  ragioni prima su una lista di città con disponibilità reale, non solo
-  prenda il primo risultato grezzo della ricerca. Oggi esiste solo il
-  meccanismo più semplice (`location_unspecified`, compromesso dichiarato
-  su una singola città) — non ancora il ragionamento su una shortlist
-  reale. **Non ancora implementato.**
-- **Prezzo "confermato" prima di chiedere di prenotare** (punto 5):
-  spostare l'apertura reale del carrello (e quindi la verifica prezzo)
-  prima della proposta, invece che dopo la conferma del viaggiatore —
-  così il prezzo mostrato è già garantito, non "verificato in silenzio"
-  un turno dopo. Giuseppe ha detto "non ho capito" alla mia prima
-  spiegazione; è stata solo chiarita, non richiesta esplicitamente. **In
-  attesa di via libera esplicito prima di implementarla** — è un cambio
-  di architettura non banale (aprirebbe un carrello reale HOFJ per ogni
-  proposta, anche quelle che verranno rifiutate).
+- **"Shortlist" di città reali prima della scelta finale** (punto 1):
+  **approvato, da implementare** — non urgente, dopo il resto. Quando la
+  città non è vincolante/singola, l'agente deve valutare internamente più
+  candidati città con disponibilità reale prima di scegliere quale
+  proporre; resta comunque UNA sola proposta finale, mai una lista
+  mostrata al viaggiatore.
+- **Apertura carrello prima della proposta (invece che dopo la conferma)**
+  (punto 2): **deciso di NON implementarla.** Resta l'architettura attuale
+  (proponi → conferma → verifica reale in silenzio → chiudi). Motivazione
+  di Giuseppe: aprire un itinerary HOFJ vero per ogni proposta — comprese
+  quelle rifiutate, che sono la norma nel flusso attuale — moltiplica le
+  chiamate su un'API rate-limited condivisa e rischia di far emergere
+  prodotti non prenotabili durante quella che dovrebbe restare una
+  proposta leggera. Documentato nella sezione scope-cut di
+  `ARCHITECTURE.md` (sezione 1).
+- **Profilazione utente reale, persistente tra conversazioni** (punto 3):
+  **deciso di NON implementarla** in questa sessione. Richiederebbe anche
+  risolvere "come riconosco lo stesso utente la prossima volta" — un
+  problema di design a sé (identità/autenticazione). `DEMO_TRAVELLER`
+  resta esplicitamente un profilo demo/test. Documentato nella sezione
+  scope-cut di `ARCHITECTURE.md` (sezione 1).
 
 ## Deliverable ancora aperti
 

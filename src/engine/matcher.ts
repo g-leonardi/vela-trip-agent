@@ -51,6 +51,39 @@ function firstDateInMonth(minDate: string, maxDate: string, month: number): stri
   return null;
 }
 
+function cityKeyOf(p: SearchProduct): string {
+  return (p.primaryDestination || p.title).trim().toLowerCase();
+}
+
+/** When the traveller's city isn't pinned (`locationMatched` false — no
+ * city given, or one given that matched nothing), the raw ranked pool can
+ * mix many cities together with wildly uneven representation: a city with
+ * more inventory can flood the pool with several listings while a
+ * genuinely good alternative city has just one. Letting the selection
+ * below run over that raw mix would let inventory volume, not an honest
+ * per-city comparison, decide which city gets proposed — the opposite of
+ * "reasoning over a shortlist of cities with real availability" (Giuseppe,
+ * 2026-09-14). Reduce to one representative per city first — its own
+ * cheapest listing, same "pick honestly, don't invent a score" logic used
+ * everywhere else in this file — so the selection logic further down
+ * genuinely compares cities against each other, each via its own best
+ * offer, not whichever single product happened to rank first. Still
+ * always resolves to exactly ONE final proposal — this never becomes a
+ * list shown to the traveller, only an internal shortlist reasoned over
+ * before picking. Order is preserved from `pool`'s own ranking (first
+ * time each city is seen), so a real numeric budget/top-ranked selection
+ * downstream still respects the API's relevance ranking at the city
+ * level, just not at the level of possibly-inferior duplicate listings. */
+function shortlistByCity(pool: SearchProduct[]): SearchProduct[] {
+  const byCity = new Map<string, SearchProduct>();
+  for (const p of pool) {
+    const key = cityKeyOf(p);
+    const current = byCity.get(key);
+    if (!current || p.price < current.price) byCity.set(key, p);
+  }
+  return [...byCity.values()];
+}
+
 /** Deterministic, auditable match classification — no invented numeric
  * scores. Business logic lives here so it can be unit-tested without the
  * AI binding; the AI's job is only to phrase the result (see engine/ai.ts).
@@ -67,6 +100,12 @@ export function classify(
 ): ProposalContext | null {
   let pool = candidates.filter((c) => !rejectedProductIds.includes(String(c.productId)));
   if (pool.length === 0) return null;
+
+  // City not pinned: reason over a per-city shortlist (see
+  // shortlistByCity's doc) instead of the raw, unevenly-distributed pool.
+  if (!locationMatched) {
+    pool = shortlistByCity(pool);
+  }
 
   // A preferred month (from a vague date like "in June" that didn't
   // resolve to an exact day) doesn't hard-filter — a near-miss candidate

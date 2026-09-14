@@ -109,6 +109,29 @@ describe("classify", () => {
     expect(result?.compromise?.kind).toBe("price");
   });
 
+  it("reasons over a per-city shortlist when the city isn't pinned, so a city's own best offer isn't crowded out by its own pricier duplicates (Giuseppe, 2026-09-14: 'valuta più candidati città prima di scegliere quale proporre')", () => {
+    const slots: Slots = { ...baseSlots, city: null, dateFrom: "2026-09-25", budget: 1000 };
+    const milanoExpensiveFirst = product({ productId: 1, price: 900, primaryDestination: "milano" });
+    const torinoOnlyOption = product({ productId: 2, price: 300, primaryDestination: "torino" });
+    const milanoCheaperLater = product({ productId: 3, price: 400, primaryDestination: "milano" });
+    const result = classify(slots, [milanoExpensiveFirst, torinoOnlyOption, milanoCheaperLater], [], false);
+    // Milano is still the first city encountered in the raw ranking, so it
+    // stays the proposed city — but via its own honest cheapest listing
+    // (400, id 3), not whichever specific SKU happened to rank first (900,
+    // id 1). Torino's single listing was a fair shortlist candidate too,
+    // just not the one selected here.
+    expect(result?.candidate.productId).toBe("3");
+  });
+
+  it("still results in exactly one final proposal across a multi-city shortlist, never a list — a distinct city's cheapest listing wins outright when it's the genuinely cheapest", () => {
+    const slots: Slots = { ...baseSlots, city: null }; // no budget, no dateFrom: wantsCheapest path
+    const milano = product({ productId: 1, price: 500, primaryDestination: "milano" });
+    const torinoCheapest = product({ productId: 2, price: 120, primaryDestination: "torino" });
+    const result = classify(slots, [milano, torinoCheapest], [], false);
+    expect(result?.candidate.productId).toBe("2");
+    expect(result?.category).toBe("compromise"); // location_unspecified + date_unspecified both apply
+  });
+
   it("proposes the cheapest relevant candidate and flags budget_unspecified when budget was never mentioned at all (regression: budget used to block forever if never given)", () => {
     const slots: Slots = { ...baseSlots, dateFrom: "2026-09-25" }; // no budget, no budgetTier
     const cheap = product({ productId: 1, price: 150 });

@@ -64,6 +64,33 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     proposta successiva, re-verifica silenziosa che cattura un prezzo
     cambiato davvero) — visibili come traffico reale in `/agent-log/`, non
     solo dichiarati qui.
+  - **Apertura carrello reale prima della proposta (invece che dopo la
+    conferma)**: valutata e scartata esplicitamente da Giuseppe
+    (2026-09-14 ~18:00), non solo rimandata. L'architettura resta
+    proponi → conferma → verifica reale in silenzio → chiudi. Aprire un
+    `itinerary` HOFJ vero per ogni proposta — comprese quelle che il
+    viaggiatore rifiuterà, che nel flusso attuale sono la norma, non
+    l'eccezione (vedi "skips rejected products and proposes the next
+    one") — moltiplicherebbe le chiamate su un'API condivisa e
+    rate-limited (120 richieste/minuto, vedi sezione 5) per quella che
+    dovrebbe restare una proposta leggera, e rischierebbe di far emergere
+    un prodotto "non prenotabile" (bug reale già trovato, vedi sezione 4)
+    durante quella che il viaggiatore percepisce come una semplice
+    chiacchierata, non ancora un impegno. La conseguenza accettata: il
+    prezzo mostrato nella proposta resta "verificato in silenzio" un
+    turno dopo la conferma, non "confermato" nello stesso messaggio in
+    cui viene proposto — uno scarto reale rispetto alla customer journey
+    target discussa con Giuseppe, tenuto consapevolmente.
+  - **Profilazione utente reale, persistente tra conversazioni diverse**:
+    non implementata in questa sessione. Richiederebbe risolvere anche
+    "come riconosco lo stesso utente alla prossima conversazione" — un
+    problema di design a sé (identità/autenticazione, non solo
+    storage), fuori scope per il tempo disponibile. `DEMO_TRAVELLER`
+    (vedi sezione 4, `src/types.ts`) resta esplicitamente un profilo
+    sintetico da demo/test — dati mai reali, dichiarati come tali nel
+    codice essendo un repository pubblico — pensato come base
+    concettuale per una futura login/profilazione reale per utente, non
+    come sostituto di quel lavoro.
 
 ## 2. Architettura di scalabilità (25%)
 
