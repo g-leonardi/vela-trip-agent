@@ -56,6 +56,22 @@ sé, il rischio concreto è incoerenza tra i pezzi (un agente in Python, uno in
 JS) in un singolo Worker deployabile — non è un dettaglio da lasciare
 all'improvvisazione.
 
+## Pattern di confidenza (categorico, non percentuale)
+
+Ad ogni turno, il motore non decide in modo binario "trovato / non
+trovato" — restituisce una di tre categorie, e la categoria decide la mossa
+conversazionale successiva. Niente punteggi numerici inventati (un "73% di
+match" è falsa precisione se non c'è una formula calibrata dietro):
+
+- **Corrispondenza esatta** → proponi direttamente ("Cazzum, weekend a
+  Barcellona, 300€. Procedo?").
+- **Corrispondenza con compromesso** (data o budget leggermente fuori) →
+  proponi comunque, ma con la deroga esplicita ("non riesco a 300, riesco a
+  500, procedo?" / "quelle date non ci sono, la più vicina disponibile è
+  questa, ti va?").
+- **Nessuna corrispondenza utile** → non inventare una proposta debole, fai
+  una domanda di chiarimento.
+
 ## Stack deciso
 
 - Frontend: pagina minimale, campo di testo (+ eventuale Speech-to-Text
