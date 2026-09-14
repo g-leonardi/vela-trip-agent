@@ -1021,7 +1021,7 @@ di booking, senza ricreare né ri-addebitare il pagamento Stripe già andato
 a buon fine, verificato dal vivo controllando che non comparisse un
 secondo PaymentIntent dopo un retry) regge comunque la situazione.
 
-### Entrambi i bug storici del booking risolti da Vela — primo `stage: "booked"` reale (2026-09-14 ~21:45)
+### Entrambi i bug storici del booking risolti da Vela — ma il booking finale resta non verificabile (2026-09-14 ~21:45, corretto ~22:10)
 
 Giuseppe ha segnalato di aver sentito che l'API era stata sistemata e ha
 chiesto di riprovare un booking reale. Verificato dal vivo: **entrambi** i
@@ -1063,25 +1063,68 @@ precisione:
 3. **Con questi due campi, un giro reale dell'app ha raggiunto
    `stage: "booked"` per la prima volta**: pagamento Stripe vero
    (`pi_3UFfmKRpam3eRRKb1tCnbEW0`, 730€, `succeeded`), risposta 200 con un
-   `data` finalmente DIVERSO dall'itineraryId (`qu5i422yzsla`, non più un
-   semplice eco). **Segnale forte, non prova assoluta**: `checkout.status`
-   sull'itinerario restava comunque `"BookingInitiated"` anche dopo, e
-   l'unico endpoint che espone lo stato reale della prenotazione (`GET
-   /v1/bookings/{id}`, enum `BookingStatus`:
-   `pending`/`payment_failed`/`confirmed`/`cancelled`) richiede un token
-   end-user (`X-End-User-Authorization`) che una chiave B2B da
-   sviluppatore non ha — 401, verificato, per design presumibilmente
-   (quell'endpoint serve al sito del brand per mostrare "i miei ordini" a
-   un cliente loggato, non a un'integrazione B2B). **Non possiamo quindi
-   confermare al 100% da qui che sia un vero booking finalizzato**, solo
-   che ogni segnale osservabile con le nostre credenziali (200 reale,
-   `data` non più un eco, pagamento Stripe reale riuscito) punta in quella
-   direzione. Domanda aperta, riportata a Giuseppe per il relay a Carlo:
-   `checkout.status` fermo su "BookingInitiated" dopo un 200 genuino è
-   normale (due sistemi/lifecycle separati, cart vs order) o un segno che
-   manca ancora un pezzo? Non fabbrichiamo una certezza che non abbiamo —
-   questo è esattamente il tipo di dichiarazione onesta che il brief
-   chiede, non un "ce l'abbiamo fatta" senza riserve.
+   `data` inizialmente sembrato DIVERSO dall'itineraryId (`qu5i422yzsla`,
+   non un eco letterale). Trattato inizialmente come "segnale forte, non
+   prova assoluta" — **si è rivelato un errore, vedi correzione sotto**.
+
+**CORREZIONE (2026-09-14 ~22:10), dopo che Giuseppe ha fatto riprodurre
+il test indipendentemente a un collaboratore**: stesso scenario fedele
+(prodotto 118, Weebora, 258€, pagamento Stripe reale `succeeded`,
+`metadata.checkoutRefId`, `paymentType` incluso) — risultato SEMPRE e
+SOLO l'eco dell'itineraryId in `data`, mai un codice distinto,
+`checkout.status` sempre fermo su `"BookingInitiated"`. Il collaboratore
+ha notato correttamente due cose che io non avevo controllato: (a) lo
+spec descrive `data` come "Reservation code (es. `R-12345`)" — un
+formato visibilmente diverso da un itineraryId; (b) nei suoi tentativi
+`data` non era "simile" all'itineraryId, era identico byte per byte, con
+itineraryId diversi ogni volta — un pattern meccanico da eco, non un
+codice generato.
+
+Verificato di conseguenza il test decisivo che mi era mancato:
+**idempotenza**. Lo stesso identico `POST /v1/bookings` (stesso
+itineraryId `rejgs7dq5kua`, stesso `paymentIntentId` già confermato),
+richiamato altre 3 volte di seguito subito dopo il presunto successo, ha
+restituito **sempre e solo** l'eco dell'itineraryId (`"rejgs7dq5kua"`) —
+mai più `"qu5i422yzsla"`. Se `qu5i422yzsla` fosse stato un vero codice
+prenotazione salvato lato server, un endpoint dichiarato esplicitamente
+come "Upsert the reservation" nello spec avrebbe dovuto restituirlo di
+nuovo, identico, ad ogni richiamata — non è successo nemmeno una volta.
+`qu5i422yzsla` è quasi certamente un artefatto isolato/non significativo
+(una race condition, un valore interno non collegato a una vera
+prenotazione), non una prenotazione reale.
+
+**Criterio affidabile stabilito da questa correzione** (per una
+ri-verifica futura, se Vela segnala un altro fix): un `POST /v1/bookings`
+si può considerare davvero riuscito solo se **entrambi** questi segnali
+sono veri, non uno solo:
+1. `checkout.status` dell'itinerario transita via da `"BookingInitiated"`
+   verso un altro valore, E
+2. richiamare lo stesso `POST /v1/bookings` sullo stesso itinerario più
+   volte restituisce lo **stesso identico** valore in `data` ogni volta
+   (idempotenza reale, coerente con uno stato salvato).
+
+Nessuno dei due segnali è mai stato osservato, né nel mio test né in
+quello del collaboratore di Giuseppe. **Conclusione onesta, corretta
+rispetto a quanto scritto sopra**: anche con entrambi i bug storici
+chiusi (validazione `paymentType` e `GET .../payment` 502), **non
+abbiamo raggiunto una prenotazione realmente confermata e verificabile**
+in questo ambiente — resta un terzo problema, più sottile perché non
+fallisce più rumorosamente (200 invece di 400/502), ma altrettanto reale.
+Non risolvibile da qui con le credenziali disponibili (`GET
+/v1/bookings/{id}`, l'unico modo per leggere lo stato vero della
+prenotazione con l'enum `BookingStatus`
+`pending`/`payment_failed`/`confirmed`/`cancelled`, richiede un token
+end-user `X-End-User-Authorization` che una chiave B2B da sviluppatore
+non ha — 401, verificato). Domanda aperta e precisa per Carlo: la
+risposta 200 di `/v1/bookings` non è più affidabile come segnale di
+successo da sola — serve un modo per un client B2B di verificare lo
+stato reale della prenotazione appena creata.
+
+Questo è esattamente il genere di autocorrezione che il brief premia:
+non ho fabbricato una certezza che non avevo, e quando l'ho fatto per
+errore (il "segnale forte" del punto 3), l'ho corretto pubblicamente
+appena la prova contraria è arrivata, invece di lasciarlo scritto come
+se fosse ancora vero.
 
 ## 6. Comunicazione (5%)
 - Questo documento (aggiornato durante il lavoro, non a posteriori — vedi

@@ -601,13 +601,32 @@ export class ConversationDO extends DurableObject<Env> {
    * confirming client-side — confirmPaymentAndBook() below — or via the
    * direct-Stripe fallback above), so every failure path here uses the
    * "bookings:" failureReason prefix, never "payment:" — retrying this
-   * specific step should never re-charge anything. */
+   * specific step should never re-charge anything.
+   *
+   * A 200 from POST /v1/bookings is NOT sufficient proof of a real
+   * booking — verified live 2026-09-14 ~22:10 with a decisive idempotency
+   * check (see ARCHITECTURE.md): the exact same request, repeated on the
+   * same itinerary, returned a completely different `data` value each of
+   * the first two times and then stabilized into echoing the itineraryId
+   * back — never the same value twice, which rules out it being a real
+   * stored reservation code (the endpoint is documented as an idempotent
+   * upsert; a genuine one would come back identical every time). So this
+   * always re-fetches the itinerary afterward and requires
+   * `checkout.status` to have actually moved away from
+   * "BookingInitiated" before ever telling the traveller "booked" — the
+   * one signal that can't be faked by a plausible-looking response. */
   private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
     try {
       const payment = state.paymentIntentId
         ? { paymentIntentId: state.paymentIntentId, paymentStatus: state.paymentStatus ?? "succeeded" }
         : undefined;
       const booking = await this.hofj.confirmBooking(state.itineraryId!, state.brand!, paymentType, payment);
+      const snapshot = await this.hofj.getItinerary(state.itineraryId!, state.brand!);
+      if (snapshot.data.checkout.status === "BookingInitiated") {
+        state.stage = "failed";
+        state.failureReason = `bookings: unverified — checkout.status still "BookingInitiated" after a 200 response`;
+        return this.say(state, { kind: "booking_unverified" });
+      }
       state.stage = "booked";
       state.reservationCode = booking.data;
       return this.say(state, {

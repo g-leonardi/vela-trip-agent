@@ -47,26 +47,49 @@ Non tutto è risolto — quello che segue è preciso, non ottimistico:
   **Corretto**: ora forwardati sempre (`hofj/client.ts`, `conversation.ts`
   — persistiti in `state.paymentIntentId`/`paymentStatus` così anche un
   "riprova" successivo li re-invia senza dover ripagare).
-- **Con questi due campi forwardati, un giro completo reale dell'app ha
-  raggiunto `stage: "booked"` per la prima volta**: pagamento Stripe vero
-  e riuscito (`pi_3UFfmKRpam3eRRKb1tCnbEW0`, 730€), `POST /v1/bookings`
-  200 con un `data` DIVERSO dall'itineraryId (`qu5i422yzsla` vs
-  `rejgs7dq5kua` — non è più un semplice eco, la forma dichiarata dallo
-  spec per un vero codice prenotazione). **Non però verificabile in modo
-  indipendente al 100%**: `checkout.status` sull'itinerario restava
-  comunque `"BookingInitiated"` anche dopo, e l'unico endpoint che
-  espone lo stato REALE della prenotazione (`GET /v1/bookings/{id}`,
-  schema `BookingStatus`: `pending`/`payment_failed`/`confirmed`/
-  `cancelled`) richiede un token di autenticazione end-user
-  (`X-End-User-Authorization`) che non abbiamo — la nostra chiave da
-  1500b sviluppatore-B2B dà 401 su quell'endpoint specifico, per design
-  presumibilmente (è pensato per il sito del brand che mostra "i miei
-  ordini" a un cliente loggato, non per un'integrazione B2B). **Domanda
-  aperta per Carlo**: `checkout.status` che resta "BookingInitiated" dopo
-  un 200 su `/v1/bookings` con un `data` genuino è normale (due sistemi
-  diversi con lifecycle separati, cart vs order) o è un segno che la
-  prenotazione non si è davvero finalizzata? Non lo sappiamo con
-  certezza da qui.
+- ~~**Con questi due campi forwardati, un giro completo reale dell'app ha
+  raggiunto `stage: "booked"` per la prima volta**~~ — **SMENTITO
+  (2026-09-14 ~22:10)**, vedi sotto. Non cancellato, corretto: fa parte
+  della cronologia reale, incluso l'errore.
+
+### CORREZIONE: quel "booking riuscito" non era reale (2026-09-14 ~22:10)
+
+Giuseppe ha fatto riprodurre il test indipendentemente da un
+collaboratore, fedele al nostro scenario (prodotto 118, Weebora, 258€,
+Stripe reale `succeeded`, `metadata.checkoutRefId`, `paymentType`
+incluso): risultato **sempre e solo** l'eco dell'itineraryId in `data`,
+mai un codice distinto, `checkout.status` sempre fermo su
+`"BookingInitiated"`. Ha notato due cose giuste che io non avevo
+controllato: lo spec descrive `data` come "Reservation code (es.
+`R-12345`)", un formato ben diverso da un itineraryId; e nei suoi
+tentativi `data` non era "simile" all'itineraryId, era identico byte per
+byte — un pattern da eco, non da codice generato.
+
+Verificato di conseguenza il test che mi mancava: **idempotenza**. Lo
+stesso `POST /v1/bookings` (stesso itineraryId, stesso PaymentIntent già
+confermato) richiamato altre 3 volte di seguito ha restituito **sempre**
+l'eco dell'itineraryId — mai più il valore "diverso" della prima volta.
+Un endpoint dichiarato dallo spec come "Upsert the reservation" avrebbe
+dovuto restituire lo stesso codice reale ad ogni richiamata, se fosse
+stato vero. Non è successo nemmeno una volta: quel valore era quasi
+certamente un artefatto isolato, non una prenotazione salvata.
+
+**Criterio affidabile per una ri-verifica futura** — un `POST
+/v1/bookings` riuscito per davvero richiede ENTRAMBI questi segnali, non
+uno solo: (1) `checkout.status` che transita via da "BookingInitiated";
+(2) chiamate ripetute sullo stesso itinerary che restituiscono lo
+STESSO identico `data` ogni volta (idempotenza reale). Nessuno dei due è
+mai stato osservato, né da me né dal collaboratore di Giuseppe.
+
+**Conclusione onesta**: anche con i due bug storici chiusi, non abbiamo
+raggiunto una prenotazione realmente confermata e verificabile in questo
+ambiente. È un terzo problema — più subdolo, perché ora fallisce con un
+200 plausibile invece di un 400/502 rumoroso — non risolvibile da qui
+(niente accesso a `GET /v1/bookings/{id}`, richiede un token end-user che
+una chiave B2B non ha, 401 verificato). Domanda precisa per Carlo: la
+risposta 200 di `/v1/bookings` non è più un segnale di successo
+affidabile da sola — serve un modo per un client B2B di verificare lo
+stato reale di una prenotazione appena creata.
 
 ## Risolto in questa sessione (per riferimento, non più aperto)
 

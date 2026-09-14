@@ -151,6 +151,7 @@ export type SayDirective =
   | { kind: "price_changed"; oldPrice: string; newPrice: string }
   | { kind: "payment_unavailable"; retrying: boolean }
   | { kind: "booking_forbidden" }
+  | { kind: "booking_unverified" }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
   | { kind: "no_match"; precededBy?: "rejected" | "unavailable" };
 
@@ -225,6 +226,14 @@ function directiveToInstruction(d: SayDirective): string {
         : `Il sistema di pagamento del fornitore non è disponibile in questo momento (problema tecnico loro, non del viaggiatore). Scusati brevemente e chiedi se preferisce che ci riprovi tra poco o che lasci i suoi dati per essere ricontattato appena torna disponibile.`;
     case "booking_forbidden":
       return `C'è un problema di autorizzazione lato nostro sistema che impedisce di confermare la prenotazione in questo momento (non è colpa del viaggiatore né un problema di disponibilità). Scusati, sii onesto e diretto, di' che verrà segnalato internamente.`;
+    case "booking_unverified":
+      // Regression found live 2026-09-14: the fornitore's booking
+      // confirmation can return a plausible-looking 200 without actually
+      // registering the reservation (verified via a decisive idempotency
+      // check — see ARCHITECTURE.md). Never tell the traveller "booked"
+      // on a signal we've proven unreliable — this is the honest
+      // alternative when that happens, not a generic error.
+      return `Hai provato a confermare la prenotazione (il pagamento è già andato a buon fine, quello è sicuro), ma il sistema del fornitore non ti dà conferma certa che la prenotazione sia stata registrata per davvero — non vuoi dire "prenotato" se non ne sei sicuro. Spiegalo con onestà in una frase, poi chiedi se preferisce che ci riprovi tra poco o che lasci i suoi dati per essere ricontattato appena il fornitore conferma.`;
     case "booked":
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
     case "no_match": {
