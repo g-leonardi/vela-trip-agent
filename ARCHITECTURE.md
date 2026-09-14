@@ -473,6 +473,54 @@ stessa qualità di fraseggio e la stessa disciplina "una proposta alla volta".
    moduli, ecc.) — utile per la ri-verifica silenziosa prezzo/disponibilità
    prima di chiudere, richiesta dal brief.
 
+### Altri due bug reali trovati facendo girare la pipeline con più persone (2026-09-15 ~16:00)
+
+1. **`rooms` non scala con `adults`.** Avevamo `rooms: 1` fisso. Con 3
+   adulti sullo stesso prodotto/data che funzionava per 1, `POST
+   /v1/itineraries` ha dato 500 upstream con
+   `"code":"ComponentAvailability","detail":"...lack of availability"` — la
+   singola stanza del prodotto non basta per 3 persone. Verificato dal vivo
+   che passare `rooms: 2` risolve immediatamente. **Corretto**:
+   `rooms = Math.max(1, Math.ceil(adults / 2))`, una stima ragionevole (2
+   persone a stanza, convenzione alberghiera standard) in assenza di uno
+   step conversazionale dedicato alla configurazione stanze, fuori scope.
+2. **Il body di errore a volte arriva illeggibile SOLO passando dal
+   runtime Workers, non da curl diretto.** Lo stesso identico endpoint,
+   stesso identico errore upstream (`RESERVATION_PERIOD_ERROR`), restituiva
+   il JSON completo e leggibile via `curl` diretto ma collassava a un
+   generico `"error code: 502"` (pagina di errore di Cloudflare stessa, non
+   di HOFJ) quando il fetch avveniva dentro il Worker — probabile
+   comportamento di sintesi dell'edge Cloudflare quando l'origin (hosted su
+   Google/Firebase) si comporta in modo anomalo su quella risposta
+   specifica. Non riproducibile in modo deterministico da fuori. **Non
+   risolvibile lato nostro alla radice** (è un'interazione tra
+   l'infrastruttura Cloudflare e l'origin di HOFJ), ma reso innocuo: il
+   client ora legge sempre il body come testo grezzo prima di provare il
+   parsing JSON (mai più un fallimento di `res.json()` silenzioso che
+   perde il messaggio reale), e la logica di negoziazione data non si basa
+   più sul testo esatto dell'errore (vedi sotto) — non serve più leggerlo
+   correttamente per reagire bene.
+
+### Data non valida ≠ errore transitorio — negoziazione invece di "riprova" fuorviante
+
+`minDate`/`maxDate` di un prodotto sono un **intervallo**, ma la
+disponibilità reale è a **slot discreti** dentro quell'intervallo — non
+ogni giorno nel mezzo è prenotabile davvero. Scoperto testando dal vivo:
+"9 ottobre" per un prodotto il cui `minDate` è "25 settembre" e `maxDate`
+"11 dicembre" sembra plausibilmente dentro range, ma `POST
+/v1/itineraries` fallisce con `RESERVATION_PERIOD_ERROR`. Dato il problema
+di parsing del punto precedente (il testo dell'errore reale non sempre
+arriva intatto), **la correzione non si basa sul contenuto esatto
+dell'errore**: qualunque fallimento di `createItinerary` con una data
+diversa dal `minDate` noto-buono del candidato viene trattato come "questa
+data probabilmente non è reale" e negoziato — si ripiega sul `minDate` del
+candidato (quasi certamente uno slot vero, visto che ogni prodotto testato
+in sessione si è aperto con successo su quella data) e si chiede
+riconferma esplicita, stesso pattern di compromesso prezzo/data già
+esistente. Continuare a dire "il sistema è lento, riprova" per un errore
+non transitorio sarebbe stato fuorviante: riprovare con la stessa data
+sbagliata fallisce identico.
+
 **Due blocchi reali trovati sull'ultimo miglio (bug scoperti, non nostri):**
 - `GET .../payment` (refresh Stripe payment intent) → **sempre 502**, con
   dettaglio `"Brand \"terrarossa.com\" GET /itinerary/.../payment returned

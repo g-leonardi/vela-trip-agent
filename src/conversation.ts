@@ -252,13 +252,59 @@ export class ConversationDO extends DurableObject<Env> {
   private async openRealCartAndAttemptPayment(state: ConversationState): Promise<string> {
     const proposal = state.proposal!;
     const { candidate } = proposal;
+    const requestedDate = state.slots.dateFrom!;
+    // A single room only fits so many people — verified live: 3 adults
+    // with rooms:1 on a real product 400ed upstream with
+    // ComponentAvailability ("lack of availability"), and passing rooms:2
+    // fixed it immediately. Two people per room is a standard hotel
+    // convention and a reasonable default absent a way to ask the
+    // traveller directly without adding a whole new slot-filling step for
+    // room configuration, which is out of scope here.
+    const rooms = Math.max(1, Math.ceil(state.slots.adults! / 2));
 
-    const created = await this.hofj.createItinerary({
-      productId: candidate.productId,
-      startDate: state.slots.dateFrom!,
-      adults: state.slots.adults!,
-      rooms: 1,
-    });
+    let created;
+    try {
+      created = await this.hofj.createItinerary({
+        productId: candidate.productId,
+        startDate: requestedDate,
+        adults: state.slots.adults!,
+        rooms,
+      });
+    } catch (err) {
+      if (err instanceof HofjApiError) {
+        console.error("createItinerary failed:", err.status, err.detail.slice(0, 200));
+      }
+      // minDate/maxDate from search is a *range*, but real availability is
+      // discrete slots inside it — verified live: a date well within that
+      // range still fails upstream with RESERVATION_PERIOD_ERROR. Treating
+      // this as a generic transient error would tell the traveller "the
+      // system is slow, try again" — misleading, since retrying the exact
+      // same date is guaranteed to fail identically. We can't reliably
+      // string-match the specific upstream reason: verified live that the
+      // real detail sometimes arrives intact via HofjApiError, but other
+      // times arrives collapsed to a generic "error code: 502" — Cloudflare
+      // itself appears to synthesize that when HOFJ's origin misbehaves on
+      // this response, before our own JSON-parsing fallback ever sees the
+      // real body. So instead of gating on the exact error text, treat ANY
+      // createItinerary failure as "this date probably isn't real" and
+      // negotiate: fall back to the candidate's own minDate (near-certain
+      // to be a real slot, since every product tested this session opened
+      // successfully on it) and ask for reconfirmation, same pattern as a
+      // price/date compromise. Only skip this when we're already on
+      // minDate (nothing left to fall back to — a genuinely different,
+      // fatal problem at that point).
+      if (err instanceof HofjApiError && requestedDate !== candidate.minDate) {
+        state.slots.dateFrom = candidate.minDate;
+        state.stage = "proposing";
+        state.proposal = {
+          ...proposal,
+          category: "compromise",
+          compromise: { kind: "date", requested: requestedDate, offered: candidate.minDate },
+        };
+        return say(this.env, { kind: "propose", ctx: state.proposal });
+      }
+      throw err;
+    }
     state.itineraryId = created.data.itineraryId;
 
     const snapshot = await this.hofj.getItinerary(state.itineraryId);

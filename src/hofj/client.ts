@@ -123,10 +123,20 @@ export class HofjClient {
     }
 
     if (!res.ok) {
-      const problem = await res
-        .json<{ detail?: string; title?: string }>()
-        .catch((): { detail?: string; title?: string } => ({}));
-      const detail = problem.detail ?? problem.title ?? res.statusText;
+      // Read as text first, then try to parse: verified live that
+      // res.json() can throw here even though the exact same response body
+      // is valid JSON when fetched with curl directly (large error bodies
+      // with escaped stack traces — worth having the raw text either way,
+      // since a parse failure previously collapsed the real upstream
+      // detail down to a useless generic "Bad Gateway").
+      const raw = await res.text().catch(() => "");
+      let detail = raw || res.statusText;
+      try {
+        const problem = JSON.parse(raw) as { detail?: string; title?: string };
+        detail = problem.detail ?? problem.title ?? detail;
+      } catch {
+        // not JSON (or empty) — keep the raw text as the detail
+      }
       const retryable = res.status === 429 || res.status === 502 || res.status === 503;
       throw new HofjApiError(res.status, detail, retryable);
     }
