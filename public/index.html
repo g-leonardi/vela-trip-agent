@@ -69,7 +69,7 @@
 
   <div class="mic-stage">
     <button id="mic" aria-label="Parla con Vela">🎙️</button>
-    <div id="status">Tocca il microfono e di' cosa vuoi</div>
+    <div id="status" aria-live="polite">Tocca il microfono e di' cosa vuoi</div>
     <div id="lastReply" aria-live="polite"></div>
   </div>
 
@@ -178,8 +178,8 @@
 
     mic.addEventListener("click", () => {
       if (recognizing) { recognizer.stop(); return; }
-      speechSynthesis.cancel();
-      recognizer.start();
+      if ("speechSynthesis" in window) speechSynthesis.cancel();
+      try { recognizer.start(); } catch (e) { /* already starting, ignore */ }
     });
   } else {
     status.textContent = "Riconoscimento vocale non supportato qui — usa il campo di testo.";
