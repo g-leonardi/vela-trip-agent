@@ -232,12 +232,17 @@ mascherati da errori che sembravano problemi di terzi.
 
 ## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 
-- **"Shortlist" di città reali prima della scelta finale** (punto 1):
-  **approvato, da implementare** — non urgente, dopo il resto. Quando la
-  città non è vincolante/singola, l'agente deve valutare internamente più
-  candidati città con disponibilità reale prima di scegliere quale
-  proporre; resta comunque UNA sola proposta finale, mai una lista
-  mostrata al viaggiatore.
+- ~~**"Shortlist" di città reali prima della scelta finale**~~ (punto 1):
+  **IMPLEMENTATO e verificato dal vivo** (commit `3b7cbe4`, 2026-09-14
+  ~18:05, vedi anche `ARCHITECTURE.md`): quando la città non è
+  vincolante/singola, `classify()` riduce il pool grezzo a un
+  rappresentante per città (la sua offerta più economica) prima di
+  applicare la selezione prezzo/data — una vera comparazione tra città
+  invece di lasciare che quella con più inventario schiacci alternative
+  valide con meno listing. Resta sempre UNA proposta finale, mai una
+  lista. Verificato dal vivo: richiesta senza città né data ha prodotto
+  una singola proposta onesta (Parigi, 659€) con il compromesso
+  dichiarato. 2 test dedicati in `test/matcher.test.ts`.
 - **Apertura carrello prima della proposta (invece che dopo la conferma)**
   (punto 2): **deciso di NON implementarla.** Resta l'architettura attuale
   (proponi → conferma → verifica reale in silenzio → chiudi). Motivazione
@@ -300,6 +305,9 @@ non solo match esatti.
   soglia gratuita giornaliera durante questa sessione, quindi ogni
   chiamata passa dal fallback Haiku finché Cloudflare non resetta il
   contatore. Da ricontrollare se il consumo sembra anomalo.
-- **HOFJ è inventario condiviso**: i due bloccanti sopra potrebbero
-  sbloccarsi o cambiare comportamento senza preavviso durante le 24h —
-  vale la pena un ricontrollo periodico, non solo a fine sessione.
+- **HOFJ è inventario condiviso**: due bloccanti storici sono già spariti
+  senza preavviso durante questa stessa sessione (paymentType, `GET
+  .../payment`) — il terzo, più sottile (booking non verificabile, vedi
+  sopra), potrebbe fare lo stesso. Vale la pena un ricontrollo periodico
+  con il criterio ora stabilito (checkout.status + idempotenza), non
+  fidarsi di un 200 da solo.
