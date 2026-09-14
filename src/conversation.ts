@@ -65,6 +65,25 @@ function mergeDefined<T extends object>(target: T, updates: Partial<T>): T {
   return out;
 }
 
+// Deliberately loose (not a full RFC 5322 check) — just enough to catch
+// what actually broke a real booking live 2026-09-14: an email like
+// "Peo Blues@it" (a space before the @, no real TLD) sailed straight
+// through interpret() and only got rejected by HOFJ itself, deep inside
+// openRealCartAndAttemptPayment, with no path back to fixing it (see
+// that function's putCustomer call — a validation error there wasn't
+// even catchable as a normal "collecting_traveller" retry). Catching it
+// HERE instead — before it's ever accepted into state.traveller at all —
+// means the existing "ask again" loop for a still-missing field just
+// re-asks naturally, no special-case recovery flow needed.
+const LOOSE_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function sanitizeTravellerUpdates(updates: Partial<TravellerInfo>): Partial<TravellerInfo> {
+  if (updates.email && !LOOSE_EMAIL_RE.test(updates.email)) {
+    return { ...updates, email: null };
+  }
+  return updates;
+}
+
 export interface HandleMessageResult {
   reply: string;
   state: ConversationState;
@@ -215,7 +234,7 @@ export class ConversationDO extends DurableObject<Env> {
           state.slots.preferredMonth = resolvedDates.dateFrom ? null : extractMonthHint(dateFromText);
         }
       }
-      state.traveller = mergeDefined(state.traveller, interpretation.travellerUpdates);
+      state.traveller = mergeDefined(state.traveller, sanitizeTravellerUpdates(interpretation.travellerUpdates));
 
       // Sticky once detected: respond in whatever language the traveller
       // is actually using, not always Italian (regression: a fully
@@ -591,37 +610,61 @@ export class ConversationDO extends DurableObject<Env> {
     state.totalPrice = snapshot.data.totalPrice;
 
     const traveller = state.traveller;
-    await this.hofj.putCustomer(
-      state.itineraryId,
-      {
-        firstName: traveller.firstName!,
-        lastName: traveller.lastName!,
-        email: traveller.email!,
-        phone: traveller.phone!,
-        address: {
-          street1: "N/A",
-          postalCode: traveller.postalCode ?? "00000",
-          city: traveller.city!,
-          region: "",
-          countryCode: traveller.countryCode ?? candidate.country,
+    try {
+      await this.hofj.putCustomer(
+        state.itineraryId,
+        {
+          firstName: traveller.firstName!,
+          lastName: traveller.lastName!,
+          email: traveller.email!,
+          phone: traveller.phone!,
+          address: {
+            street1: "N/A",
+            postalCode: traveller.postalCode ?? "00000",
+            city: traveller.city!,
+            region: "",
+            countryCode: traveller.countryCode ?? candidate.country,
+          },
         },
-      },
-      brand,
-    );
-    // HOFJ auto-provisions one pax slot per adult on the itinerary the
-    // moment it's created (verified live: a 2-adult itinerary already has
-    // "pax-1"/"pax-2" in its snapshot before this call). Sending fewer pax
-    // records than that reads upstream as *changing* paxNumber, not just
-    // filling in names, and 400s (surfaced through the gateway as a
-    // generic 502) with detail
-    // "changePaxDetails.paxNumberChanged" — verified live with 2 adults
-    // and a single pax-1 entry. We only collect one real traveller's name
-    // in this demo scope, so companions beyond the first get a bare refId,
-    // matching the empty stub HOFJ itself already creates for them.
-    const pax: PaxPayload[] = Array.from({ length: state.slots.adults! }, (_, i) =>
-      i === 0 ? { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! } : { refId: `pax-${i + 1}` },
-    );
-    await this.hofj.putPax(state.itineraryId, pax, brand);
+        brand,
+      );
+      // HOFJ auto-provisions one pax slot per adult on the itinerary the
+      // moment it's created (verified live: a 2-adult itinerary already
+      // has "pax-1"/"pax-2" in its snapshot before this call). Sending
+      // fewer pax records than that reads upstream as *changing*
+      // paxNumber, not just filling in names, and 400s (surfaced through
+      // the gateway as a generic 502) with detail
+      // "changePaxDetails.paxNumberChanged" — verified live with 2 adults
+      // and a single pax-1 entry. We only collect one real traveller's
+      // name in this demo scope, so companions beyond the first get a
+      // bare refId, matching the empty stub HOFJ itself already creates
+      // for them.
+      const pax: PaxPayload[] = Array.from({ length: state.slots.adults! }, (_, i) =>
+        i === 0 ? { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! } : { refId: `pax-${i + 1}` },
+      );
+      await this.hofj.putPax(state.itineraryId, pax, brand);
+    } catch (err) {
+      // Second line of defense behind sanitizeTravellerUpdates() above —
+      // that check catches the one real case found live (a malformed
+      // email), this catches anything else HOFJ's own validation rejects
+      // that we haven't anticipated (a phone format, an address field,
+      // etc.). Regression found live 2026-09-14: this call had NO
+      // try/catch at all, so a 400 here propagated all the way up to the
+      // generic "internal error, start a new conversation" dead end —
+      // losing the whole trip negotiation (city, dates, price already
+      // agreed) over a single bad field that the traveller could have
+      // just corrected. Re-collect the traveller's data instead of
+      // killing the conversation — we don't reliably know which nested
+      // field HOFJ's error refers to, so clearing all of it and asking
+      // again is the safe, simple recovery, not a silent guess.
+      if (err instanceof HofjApiError && err.status === 400) {
+        console.error("putCustomer/putPax rejected traveller data:", err.detail.slice(0, 300));
+        state.traveller = { ...EMPTY_TRAVELLER };
+        state.stage = "collecting_traveller";
+        return this.say(state, { kind: "ask_traveller_field", field: "firstName", isFirstAsk: false, correction: true });
+      }
+      throw err;
+    }
 
     return this.attemptPayment(state);
   }

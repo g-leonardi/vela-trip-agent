@@ -230,6 +230,39 @@ contro l'API diretta, non fidandosi di un messaggio d'errore plausibile
 ma generico) — non perché il codice stia peggiorando. Erano già lì,
 mascherati da errori che sembravano problemi di terzi.
 
+## Bug trovato da Giuseppe, sessionId `9f9a7bc8-...` (2026-09-14 ~23:55) — email non valida uccideva la conversazione
+
+Un'email chiaramente sbagliata (`"Peo Blues@it"`) estratta da
+`interpret()` non veniva mai controllata prima di arrivare a
+`PUT .../customer`, che l'ha respinta con un 400 reale. Peggio: quella
+chiamata non aveva NESSUN `try/catch` (a differenza di `createItinerary`
+che ce l'ha), quindi l'errore si è propagato fino al catch-all generico,
+terminando l'intera conversazione (città/date/prezzo già negoziati,
+persi) senza alcuna possibilità di "riprova" — il meccanismo di retry
+riconosce solo `failureReason` con prefisso `payment:`/`bookings:`,
+questo non ne aveva nessuno. **Corretto**: un controllo di formato email
+prima di accettarla in `state.traveller` (permissivo ma sufficiente a
+scartare quel caso), più un `try/catch` attorno a `putCustomer`/`putPax`
+come rete di sicurezza generale — su un 400 si torna a raccogliere i
+dati del viaggiatore con un riconoscimento onesto, invece di terminare
+tutto. Vedi `ARCHITECTURE.md` per i dettagli.
+
+## "Cosa include il pacchetto?" — non ancora implementato, dati già disponibili
+
+Stessa sessione: una domanda informativa legittima sulla proposta
+("cosa include il pacchetto?") è stata ignorata — la macchina a stati
+oggi interpreta ogni messaggio in stage "proposing" solo come
+`yes`/`no`/`unclear`, non c'è alcun concetto di "rispondi a una domanda
+ad hoc". Verificato dal vivo che HOFJ restituisce già tutto il necessario
+per rispondere (`travelDetail.description`, `includedList`/
+`excludedList`, `accommodation`, `travelProgram` giorno per giorno,
+`cancellationPolicy`) — semplicemente non lo leggiamo mai, il nostro
+`ItinerarySnapshot` cattura solo prezzo/date/checkout. **Non implementato
+in questa sessione** — richiederebbe un nuovo tipo di intento riconosciuto
+durante "proposing" (oltre a yes/no/unclear) e il parsing di questi campi
+nel client HOFJ. In attesa di decisione di Giuseppe su se e quando
+costruirlo.
+
 ## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 
 - ~~**"Shortlist" di città reali prima della scelta finale**~~ (punto 1):

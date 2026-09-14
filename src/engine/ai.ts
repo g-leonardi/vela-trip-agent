@@ -155,7 +155,17 @@ export type SayDirective =
       hint?: string;
     }
   | { kind: "propose"; ctx: ProposalContext; precededBy?: "rejected" | "unavailable" }
-  | { kind: "ask_traveller_field"; field: keyof TravellerInfo; isFirstAsk: boolean }
+  | {
+      kind: "ask_traveller_field";
+      field: keyof TravellerInfo;
+      isFirstAsk: boolean;
+      /** Set when re-collecting from scratch because the fornitore
+       * rejected one of the previous answers (regression found live
+       * 2026-09-14: a malformed email killed the whole booking with no
+       * explanation) — the traveller deserves to know why they're being
+       * asked the same things again, not experience a silent restart. */
+      correction?: boolean;
+    }
   | { kind: "reverifying" }
   | { kind: "price_changed"; oldPrice: string; newPrice: string }
   | { kind: "payment_unavailable"; retrying: boolean }
@@ -223,6 +233,9 @@ function directiveToInstruction(d: SayDirective): string {
         postalCode: "il CAP",
         countryCode: "il paese",
       };
+      if (d.correction) {
+        return `Uno dei dati che il viaggiatore ha dato prima non è stato accettato dal sistema del fornitore (probabilmente un formato non valido). Scusati in breve, spiega che devi ricontrollare i suoi dati da capo, poi chiedi ${labels[d.field] ?? d.field}. Una frase, tono comprensivo, non colpevolizzante.`;
+      }
       if (d.isFirstAsk) {
         return `Spiega in una frase breve che per bloccare la prenotazione reale ti servono un paio di dati, poi chiedi ${labels[d.field] ?? d.field}. Questa è la prima volta che lo dici in questa conversazione.`;
       }

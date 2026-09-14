@@ -341,6 +341,70 @@ browser.
   "mid"` (non più `adults`), poi "Sì" in risposta agli adults → `adults: 3`
   correttamente, proposta finale raggiunta con tutti gli slot giusti.
 
+### Un'email non valida uccideva l'intera conversazione (2026-09-14 ~23:55, sessionId `9f9a7bc8-...`)
+
+Giuseppe ha segnalato una sessione dove, dopo aver negoziato con successo
+città/date/prezzo di un viaggio a Lanzarote, la conversazione è morta con
+"ho un problema tecnico interno" subito dopo aver dato i propri dati.
+Ricostruito lo stato reale: il campo email era stato salvato come `"Peo
+Blues@it"` — non un'email valida (uno spazio prima della @, nessun vero
+dominio) — e `PUT .../customer` l'ha rifiutata con un vero 400
+(`"validation":"email","message":"Invalid email"`). Non un problema di
+HOFJ: un'email palesemente sbagliata è arrivata fin lì perché nessuno
+l'aveva mai controllata prima.
+
+**Due bug reali, non uno**:
+1. Nessun controllo di formato prima di accettare l'email estratta da
+   `interpret()` — qualunque cosa il modello estraesse veniva presa per
+   buona e inoltrata direttamente a HOFJ.
+2. `putCustomer`/`putPax` in `openRealCartAndAttemptPayment` non avevano
+   NESSUN `try/catch` (a differenza di `createItinerary`, che ce l'ha) —
+   un 400 lì si propagava senza controllo fino al catch-all generico di
+   `handleMessage()`, che tratta qualunque errore non esplicitamente
+   gestito come un guasto interno fatale: `stage: "failed"` senza
+   possibilità di "riprova" (il meccanismo di retry riconosce solo i
+   prefissi `payment:`/`bookings:` nel `failureReason`, e questo non ne
+   aveva nessuno). Risultato pratico: un'intera negoziazione riuscita
+   (città, date, prezzo già concordato) buttata via per un singolo campo
+   correggibile in una frase.
+
+**Corretto in due passi, non uno solo**: (a) un controllo di formato email
+deliberatamente permissivo (non RFC 5322 completo, solo abbastanza per
+scartare `"Peo Blues@it"`) applicato PRIMA che il valore entri in
+`state.traveller` — se non passa, il campo resta `null` e il meccanismo
+di "richiedi ancora" già esistente lo richiede naturalmente, senza bisogno
+di un flusso di recupero dedicato; (b) `putCustomer`/`putPax` ora dentro
+un `try/catch` come rete di sicurezza per qualunque altro campo HOFJ
+rifiuti per motivi che non abbiamo ancora scoperto — su un 400 si torna a
+`collecting_traveller` (ripulendo i dati del viaggiatore, dato che non
+sappiamo con certezza quale campo annidato HOFJ abbia rifiutato) invece di
+terminare la conversazione, con un riconoscimento onesto del perché si
+sta richiedendo di nuovo, non un riavvio silenzioso.
+
+### "Cosa include il pacchetto?" — la domanda è stata ignorata, e i dati per rispondere esistono già (stesso sessionId)
+
+Nella stessa conversazione, il viaggiatore ha chiesto "Cosa include il
+pacchetto" dopo la proposta — l'agente ha ignorato la domanda e ha
+ripetuto lo stesso riepilogo di prima, senza aggiungere nulla. **Non è un
+bug isolato da correggere al volo**: la macchina a stati attuale non ha
+affatto un concetto di "rispondi a una domanda ad hoc sulla proposta
+corrente" — lo stage "proposing" interpreta ogni messaggio solo come
+`yes`/`no`/`unclear` rispetto alla proposta, mai come una domanda
+informativa a sé.
+
+Verificato dal vivo che i dati per rispondere esistono già, ricchi, nella
+risposta reale di `GET /v1/itineraries/{id}` — solo mai catturati dal
+nostro `ItinerarySnapshot` (che oggi legge solo prezzo/date/checkout):
+`travelDetail.description` (markdown descrittivo), `travelDetail.
+includedList`/`excludedList` (voci puntuali, es. "Hotel con prima
+colazione", "3 partite di padel", escluso "Voli"), `accommodation`
+(struttura, rating), `activities`, `travelProgram` (programma giorno per
+giorno), `cancellationPolicy`. Costruire una vera capacità di "rispondi a
+domande sul pacchetto" è una feature reale (un nuovo tipo di intento
+riconosciuto durante "proposing", più il parsing di questi campi nel
+client HOFJ) — documentata qui come gap aperto, non ancora implementata:
+vedi `OPEN-POINTS.md`.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
