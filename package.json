@@ -1,0 +1,21 @@
+{
+  "name": "vela-trip-agent",
+  "version": "0.1.0",
+  "description": "Headless conversational booking agent for padel/tennis + hotel trips, against the House of Journeys API.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cf-typegen": "wrangler types"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20260914.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.131.2"
+  }
+}

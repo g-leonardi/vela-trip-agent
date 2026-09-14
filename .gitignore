@@ -4,3 +4,7 @@ dist/
 .env
 .env.*
 *.log
+.dev.vars
+.wrangler/
+worker-configuration.d.ts
+.DS_Store

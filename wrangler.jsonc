@@ -1,0 +1,31 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "vela-trip-agent",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONVERSATION", "class_name": "ConversationDO" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] }
+  ],
+  "vars": {
+    "HOFJ_BASE_URL": "https://api.hofj.com",
+    "HOFJ_BRAND": "terrarossa.com",
+    "HOFJ_LOCALE": "en"
+  }
+}
