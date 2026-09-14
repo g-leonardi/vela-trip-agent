@@ -71,7 +71,11 @@ export interface PaxPayload {
  * are never fixed by retrying. */
 export class HofjClient {
   private readonly base: string;
-  private readonly brand: string;
+  /** The account's primary/default brand (from HOFJ_BRAND) — public so
+   * callers that need to tag search results with the brand they actually
+   * came from (see engine/matcher.ts) don't have to duplicate this string
+   * themselves. */
+  readonly brand: string;
   private readonly locale: string;
   private readonly key: string;
 
@@ -167,31 +171,42 @@ export class HofjClient {
     });
   }
 
+  /** `brand` MUST be the brand the product was actually searched under
+   * (see Candidate.brand's doc, types.ts) — regression found live
+   * 2026-09-14: every call in this itinerary-scoped group used to default
+   * to the client's own primary brand (`this.brand`, set from
+   * HOFJ_BRAND) regardless of where the product came from, so a
+   * Weebora-sourced padel candidate always 404ed at createItinerary,
+   * misread for hours as "this specific product isn't bookable" when it
+   * was really just being looked up against the wrong brand's catalog. */
   createItinerary(input: {
     productId: number | string;
     startDate: string;
     adults: number;
     rooms: number;
+    brand: string;
   }): Promise<CreateItineraryResponse> {
     // The OpenAPI spec documents productId as oneOf(integer, string), but
     // the actual brand-site upstream (verified live) enforces a strict Zod
     // number check and 400s on a numeric string. Always coerce.
+    const { brand, ...body } = input;
     return this.request("POST", "/v1/itineraries", {
-      body: { ...input, productId: Number(input.productId), currency: "EUR" },
+      body: { ...body, productId: Number(body.productId), currency: "EUR" },
+      brand,
       noRetry: true, // creates a new cart each call — see request()'s noRetry doc
     });
   }
 
-  getItinerary(itineraryId: string): Promise<ItinerarySnapshot> {
-    return this.request("GET", `/v1/itineraries/${itineraryId}`);
+  getItinerary(itineraryId: string, brand: string): Promise<ItinerarySnapshot> {
+    return this.request("GET", `/v1/itineraries/${itineraryId}`, { brand });
   }
 
-  putCustomer(itineraryId: string, customer: CustomerPayload): Promise<void> {
-    return this.request("PUT", `/v1/itineraries/${itineraryId}/customer`, { body: customer });
+  putCustomer(itineraryId: string, customer: CustomerPayload, brand: string): Promise<void> {
+    return this.request("PUT", `/v1/itineraries/${itineraryId}/customer`, { body: customer, brand });
   }
 
-  putPax(itineraryId: string, pax: PaxPayload[]): Promise<void> {
-    return this.request("PUT", `/v1/itineraries/${itineraryId}/pax`, { body: pax });
+  putPax(itineraryId: string, pax: PaxPayload[], brand: string): Promise<void> {
+    return this.request("PUT", `/v1/itineraries/${itineraryId}/pax`, { body: pax, brand });
   }
 
   /** Refresh the Stripe PaymentIntent and return its client_secret.
@@ -199,8 +214,8 @@ export class HofjClient {
    * ARCHITECTURE.md. Kept spec-correct so it starts working the moment the
    * upstream bug is fixed, since HOFJ's inventory/backend is shared and can
    * change during the session. */
-  getPaymentIntent(itineraryId: string): Promise<{ data: string }> {
-    return this.request("GET", `/v1/itineraries/${itineraryId}/payment`);
+  getPaymentIntent(itineraryId: string, brand: string): Promise<{ data: string }> {
+    return this.request("GET", `/v1/itineraries/${itineraryId}/payment`, { brand });
   }
 
   /** Confirm the booking after Stripe payment succeeds. `paymentType` is
@@ -210,8 +225,8 @@ export class HofjClient {
    * 2026-09-15: verified live that the gateway drops this field entirely
    * before forwarding it (identical ZodError with either value) — see
    * ARCHITECTURE.md. Sent anyway, spec-correct, for when that's fixed. */
-  confirmBooking(itineraryId: string, paymentType: "full" | "plan" = "full"): Promise<{ data: string }> {
-    return this.request("POST", "/v1/bookings", { body: { itineraryId, paymentType } });
+  confirmBooking(itineraryId: string, brand: string, paymentType: "full" | "plan" = "full"): Promise<{ data: string }> {
+    return this.request("POST", "/v1/bookings", { body: { itineraryId, paymentType }, brand });
   }
 
   getQuota(): Promise<{ data: { remainingInWindow: number; limitPerMinute: number } }> {

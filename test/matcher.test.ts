@@ -4,7 +4,7 @@ import type { HofjClient, SearchProduct } from "../src/hofj/client";
 import { EMPTY_SLOTS } from "../src/types";
 import type { Slots } from "../src/types";
 
-function product(overrides: Partial<SearchProduct>): SearchProduct {
+function product(overrides: Partial<SearchProduct & { brand: string }>): SearchProduct & { brand: string } {
   return {
     productId: 1,
     title: "Test Product",
@@ -17,6 +17,7 @@ function product(overrides: Partial<SearchProduct>): SearchProduct {
     minDate: "2026-09-01",
     maxDate: "2026-12-01",
     defaultDurationInDays: 3,
+    brand: "terrarossa.com",
     ...overrides,
   };
 }

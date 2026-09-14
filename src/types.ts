@@ -134,6 +134,18 @@ export interface Candidate {
   minDate: string;
   maxDate: string;
   durationDays: number;
+  /** Which HOFJ brand this product was actually found under (e.g.
+   * "terrarossa.com" or "weebora.com" — see engine/matcher.ts's padel
+   * fallback). Every downstream call that references this itinerary
+   * (createItinerary, getItinerary, putCustomer, putPax, payment,
+   * confirmBooking) MUST use this same brand — the API scopes products
+   * and itineraries per brand, and a mismatch 404s. Regression found live
+   * 2026-09-14: every Weebora-sourced padel candidate failed at booking
+   * time with a generic 502/NOT_FOUND_ERROR because the booking pipeline
+   * silently defaulted to the client's own primary brand instead of the
+   * brand the product was actually searched under — previously
+   * misdiagnosed as "product not bookable, an upstream data problem". */
+  brand: string;
 }
 
 export interface ProposalContext {
@@ -176,6 +188,11 @@ export interface ConversationState {
   proposal: ProposalContext | null;
   rejectedProductIds: string[];
   itineraryId: string | null;
+  /** The HOFJ brand the current/last real itinerary was opened under (see
+   * Candidate.brand) — persisted separately from `proposal` so a retry on
+   * a later turn (attemptPayment, confirmBookingNow) still targets the
+   * right brand even if `proposal` itself has since changed or cleared. */
+  brand: string | null;
   totalPrice: { amount: string; currency: string } | null;
   reservationCode: string | null;
   failureReason: string | null;

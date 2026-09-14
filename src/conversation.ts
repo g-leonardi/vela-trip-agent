@@ -41,6 +41,7 @@ function initialState(): ConversationState {
     proposal: null,
     rejectedProductIds: [],
     itineraryId: null,
+    brand: null,
     totalPrice: null,
     reservationCode: null,
     failureReason: null,
@@ -391,6 +392,7 @@ export class ConversationDO extends DurableObject<Env> {
   private async openRealCartAndAttemptPayment(state: ConversationState): Promise<string> {
     const proposal = state.proposal!;
     const { candidate } = proposal;
+    const brand = candidate.brand;
     const requestedDate = state.slots.dateFrom!;
     // A single room only fits so many people — verified live: 3 adults
     // with rooms:1 on a real product 400ed upstream with
@@ -408,6 +410,7 @@ export class ConversationDO extends DurableObject<Env> {
         startDate: requestedDate,
         adults: state.slots.adults!,
         rooms,
+        brand,
       });
     } catch (err) {
       if (err instanceof HofjApiError) {
@@ -444,14 +447,22 @@ export class ConversationDO extends DurableObject<Env> {
       }
       // Already on the candidate's own known-good minDate and it *still*
       // failed: this isn't a date problem, and retrying (the generic
-      // "sistema lento, riprova" path) can never succeed — verified live,
-      // this exact product/date/party-size combo 404ed upstream with
-      // NOT_FOUND_ERROR even though it came back as a normal, well-formed
-      // search result. Exactly the "prodotto non prenotabile" case the
-      // brief warns about, just discovered at booking time instead of
-      // search time. Reject this specific product and look for the next
-      // best candidate instead of asking the traveller to retry something
-      // that will never work.
+      // "sistema lento, riprova" path) can never succeed. Originally
+      // logged here as an upstream "prodotto non prenotabile" case
+      // (NOT_FOUND_ERROR on a product that came back as a normal search
+      // result) — but that diagnosis turned out to be WRONG for the two
+      // real cases hit this session (Lanzarote padel, ids 186/181):
+      // verified live 2026-09-14 that both actually create fine when
+      // called with `brand` set correctly, and 404 with the exact same
+      // error only when called under the wrong brand — which is precisely
+      // what `createItinerary` used to do before `brand` was threaded
+      // through end to end (see Candidate.brand's doc, types.ts). So a
+      // genuinely unbookable product may still exist somewhere in this
+      // catalog, but neither confirmed instance of this branch firing was
+      // actually one — both were this same brand bug. Kept as a fallback
+      // safety net regardless: reject this specific product and look for
+      // the next best candidate instead of asking the traveller to retry
+      // something that (for whatever the real reason) isn't working.
       if (err instanceof HofjApiError) {
         state.rejectedProductIds.push(candidate.productId);
         state.proposal = null;
@@ -461,8 +472,9 @@ export class ConversationDO extends DurableObject<Env> {
       throw err;
     }
     state.itineraryId = created.data.itineraryId;
+    state.brand = brand;
 
-    const snapshot = await this.hofj.getItinerary(state.itineraryId);
+    const snapshot = await this.hofj.getItinerary(state.itineraryId, brand);
     const livePrice = Number(snapshot.data.totalPrice.amount);
     const proposedPrice = candidate.price;
     if (Math.abs(livePrice - proposedPrice) / proposedPrice > PRICE_CHANGE_TOLERANCE) {
@@ -482,19 +494,23 @@ export class ConversationDO extends DurableObject<Env> {
     state.totalPrice = snapshot.data.totalPrice;
 
     const traveller = state.traveller;
-    await this.hofj.putCustomer(state.itineraryId, {
-      firstName: traveller.firstName!,
-      lastName: traveller.lastName!,
-      email: traveller.email!,
-      phone: traveller.phone!,
-      address: {
-        street1: "N/A",
-        postalCode: traveller.postalCode ?? "00000",
-        city: traveller.city!,
-        region: "",
-        countryCode: traveller.countryCode ?? candidate.country,
+    await this.hofj.putCustomer(
+      state.itineraryId,
+      {
+        firstName: traveller.firstName!,
+        lastName: traveller.lastName!,
+        email: traveller.email!,
+        phone: traveller.phone!,
+        address: {
+          street1: "N/A",
+          postalCode: traveller.postalCode ?? "00000",
+          city: traveller.city!,
+          region: "",
+          countryCode: traveller.countryCode ?? candidate.country,
+        },
       },
-    });
+      brand,
+    );
     // HOFJ auto-provisions one pax slot per adult on the itinerary the
     // moment it's created (verified live: a 2-adult itinerary already has
     // "pax-1"/"pax-2" in its snapshot before this call). Sending fewer pax
@@ -508,14 +524,14 @@ export class ConversationDO extends DurableObject<Env> {
     const pax: PaxPayload[] = Array.from({ length: state.slots.adults! }, (_, i) =>
       i === 0 ? { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! } : { refId: `pax-${i + 1}` },
     );
-    await this.hofj.putPax(state.itineraryId, pax);
+    await this.hofj.putPax(state.itineraryId, pax, brand);
 
     return this.attemptPayment(state);
   }
 
   private async attemptPayment(state: ConversationState): Promise<string> {
     try {
-      await this.hofj.getPaymentIntent(state.itineraryId!);
+      await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
       // Would hand the client_secret to the frontend for Stripe.js here;
       // left for confirmPaymentAndBook() to be invoked once Stripe confirms
       // client-side. See ARCHITECTURE.md — untestable while the upstream
@@ -581,7 +597,7 @@ export class ConversationDO extends DurableObject<Env> {
    * specific step should never re-charge anything. */
   private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
     try {
-      const booking = await this.hofj.confirmBooking(state.itineraryId!, paymentType);
+      const booking = await this.hofj.confirmBooking(state.itineraryId!, state.brand!, paymentType);
       state.stage = "booked";
       state.reservationCode = booking.data;
       return this.say(state, {

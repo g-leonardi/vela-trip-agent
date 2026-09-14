@@ -73,6 +73,13 @@ describe("resolveDate", () => {
     expect(resolveDate("next weekend", NOW)).toBe("2026-09-19");
     expect(resolveDate("in 10 days", NOW)).toBe("2026-09-24");
   });
+
+  it("resolves a 'dal X al Y [month]' / 'X to Y [month]' RANGE phrase to its own START day, not whichever number ends up textually next to the month name (regression, found live by Giuseppe 2026-09-14: 'dal 15 al 21 settembre' silently resolved to the 21st — the generic day+month pattern isn't anchored, so it skips '15' since 'al 21' sits between it and the month, and matches '21 settembre' instead)", () => {
+    expect(resolveDate("dal 15 al 21 settembre", NOW)).toBe("2026-09-15");
+    expect(resolveDate("dal 15 al 21 settembre 2026", NOW)).toBe("2026-09-15");
+    expect(resolveDate("15 to 21 September", NOW)).toBe("2026-09-15");
+    expect(resolveDate("15th to 21st September 2027", NOW)).toBe("2027-09-15");
+  });
 });
 
 describe("extractMonthHint", () => {

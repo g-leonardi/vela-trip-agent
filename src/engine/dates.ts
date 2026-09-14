@@ -86,6 +86,24 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
     return toIso(addDays(now, offset));
   }
 
+  // "dal 15 al 21 settembre" / "15 to 21 September" — a date RANGE, where
+  // the day textually adjacent to the month isn't necessarily the START
+  // day (regression found live by Giuseppe, 2026-09-14: the generic
+  // dayMonth pattern below isn't anchored to the start of the phrase, so
+  // on "dal 15 al 21 settembre" it skips the "15" — not directly attached
+  // to "settembre", "al 21" sits in between — and matches "21 settembre"
+  // instead, silently resolving dateFrom to the wrong end of the range).
+  // Tried first, before the generic single-day pattern, so a range phrase
+  // always keeps its own first number as the day regardless of which one
+  // ends up textually next to the month name.
+  const itRange = text.match(
+    new RegExp(`dal\\s+(\\d{1,2})\\s*(?:°|º)?\\s*al\\s+\\d{1,2}\\s*(?:°|º)?\\s*(?:di\\s+|d['’]\\s*)?(${MONTH_NAMES_PATTERN})(?:\\s+(\\d{4}))?`),
+  );
+  const enRange = text.match(
+    new RegExp(`(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s*to\\s+\\d{1,2}\\s*(?:st|nd|rd|th)?\\s+(${MONTH_NAMES_PATTERN})(?:,?\\s+(\\d{4}))?`),
+  );
+  const range = itRange ?? enRange;
+
   // "25 settembre" / "il 9 di ottobre" / "September 25th" / "25 September
   // 2027" — "di"/"d'" as a connector is common spoken/written Italian
   // ("il 9 di ottobre"), and day-before-or-after-month covers both IT
@@ -96,7 +114,7 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
   const monthDay = text.match(
     new RegExp(`(${MONTH_NAMES_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?`),
   );
-  const m = dayMonth ?? (monthDay && [monthDay[0], monthDay[2], monthDay[1], monthDay[3]]);
+  const m = range ?? dayMonth ?? (monthDay && [monthDay[0], monthDay[2], monthDay[1], monthDay[3]]);
   if (m) {
     const day = Number(m[1]);
     const month = MONTHS[m[2]!.toLowerCase()]!;

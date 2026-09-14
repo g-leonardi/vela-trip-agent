@@ -58,7 +58,7 @@ describe("HofjClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new HofjClient(fakeEnv());
-    await expect(client.getPaymentIntent("abc")).rejects.toMatchObject({
+    await expect(client.getPaymentIntent("abc", "terrarossa.com")).rejects.toMatchObject({
       status: 502,
       retryable: true,
     } satisfies Partial<HofjApiError>);
@@ -72,7 +72,7 @@ describe("HofjClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new HofjClient(fakeEnv());
-    await expect(client.confirmBooking("abc")).rejects.toMatchObject({
+    await expect(client.confirmBooking("abc", "terrarossa.com")).rejects.toMatchObject({
       status: 403,
       retryable: false,
     } satisfies Partial<HofjApiError>);
@@ -86,7 +86,7 @@ describe("HofjClient", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const client = new HofjClient(fakeEnv());
-    await client.createItinerary({ productId: "988", startDate: "2026-09-25", adults: 1, rooms: 1 });
+    await client.createItinerary({ productId: "988", startDate: "2026-09-25", adults: 1, rooms: 1, brand: "terrarossa.com" });
 
     const [, init] = fetchMock.mock.calls[0]!;
     const sentBody = JSON.parse(String(init?.body));
@@ -104,8 +104,38 @@ describe("HofjClient", () => {
 
     const client = new HofjClient(fakeEnv());
     await expect(
-      client.createItinerary({ productId: 988, startDate: "2026-09-25", adults: 1, rooms: 1 }),
+      client.createItinerary({ productId: 988, startDate: "2026-09-25", adults: 1, rooms: 1, brand: "terrarossa.com" }),
     ).rejects.toMatchObject({ status: 502 });
     expect(fetchMock).toHaveBeenCalledTimes(1); // no retry
+  });
+
+  it("sends createItinerary against the EXPLICIT brand passed in, not the client's own default (regression: every Weebora-sourced product 404ed because this call always used the client's primary brand regardless of where the product actually came from)", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
+      jsonResponse(200, { data: { itineraryId: "it1" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    // Client's own default brand is "terrarossa.com" (fakeEnv), but this
+    // product was found under weebora.com — the call must honor that.
+    const client = new HofjClient(fakeEnv());
+    await client.createItinerary({ productId: 181, startDate: "2026-09-17", adults: 2, rooms: 1, brand: "weebora.com" });
+
+    const [url] = fetchMock.mock.calls[0]!;
+    const calledUrl = new URL(String(url));
+    expect(calledUrl.searchParams.get("brand")).toBe("weebora.com");
+  });
+
+  it("sends putPax, putCustomer and confirmBooking against the explicit brand passed in too", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => jsonResponse(200, { data: "ok" }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new HofjClient(fakeEnv());
+
+    await client.putPax("it1", [{ refId: "pax-1" }], "weebora.com");
+    await client.confirmBooking("it1", "weebora.com", "plan");
+
+    for (const call of fetchMock.mock.calls) {
+      const calledUrl = new URL(String(call[0]));
+      expect(calledUrl.searchParams.get("brand")).toBe("weebora.com");
+    }
   });
 });

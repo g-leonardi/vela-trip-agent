@@ -6,7 +6,14 @@ import type { Candidate, ConfidenceCategory, ProposalContext, Slots } from "../t
 const BUDGET_COMPROMISE_CEILING = 2.0;
 const DATE_COMPROMISE_WINDOW_DAYS = 45;
 
-function toCandidate(p: SearchProduct): Candidate {
+/** The HOFJ search response itself doesn't say which brand a product came
+ * from (you query one brand at a time) — tagged on locally right after
+ * each search call (see rawSearchOneBrand) so it survives all the way
+ * into the final Candidate and the booking pipeline needs it (see
+ * Candidate.brand's doc, types.ts, for why this matters). */
+type BrandedProduct = SearchProduct & { brand: string };
+
+function toCandidate(p: BrandedProduct): Candidate {
   return {
     productId: String(p.productId),
     title: p.title,
@@ -18,6 +25,7 @@ function toCandidate(p: SearchProduct): Candidate {
     minDate: p.minDate,
     maxDate: p.maxDate,
     durationDays: p.defaultDurationInDays,
+    brand: p.brand,
   };
 }
 
@@ -74,8 +82,8 @@ function cityKeyOf(p: SearchProduct): string {
  * time each city is seen), so a real numeric budget/top-ranked selection
  * downstream still respects the API's relevance ranking at the city
  * level, just not at the level of possibly-inferior duplicate listings. */
-function shortlistByCity(pool: SearchProduct[]): SearchProduct[] {
-  const byCity = new Map<string, SearchProduct>();
+function shortlistByCity<T extends SearchProduct>(pool: T[]): T[] {
+  const byCity = new Map<string, T>();
   for (const p of pool) {
     const key = cityKeyOf(p);
     const current = byCity.get(key);
@@ -94,7 +102,7 @@ function shortlistByCity(pool: SearchProduct[]): SearchProduct[] {
  * may decide, but never silently. */
 export function classify(
   slots: Slots,
-  candidates: SearchProduct[],
+  candidates: BrandedProduct[],
   rejectedProductIds: string[],
   locationMatched: boolean,
 ): ProposalContext | null {
@@ -254,7 +262,7 @@ function cityMatches(requested: string, product: SearchProduct): boolean {
  * all — so we drop non-matching candidates rather than just re-sort them;
  * if that empties the list, classify() correctly falls through to a
  * clarifying question instead of a plausible-looking wrong-city proposal. */
-function filterToMatchingCity(slots: Slots, candidates: SearchProduct[]): SearchProduct[] {
+function filterToMatchingCity<T extends SearchProduct>(slots: Slots, candidates: T[]): T[] {
   if (!slots.city) return candidates;
   const matching = candidates.filter((c) => cityMatches(slots.city!, c));
   return matching;
@@ -265,18 +273,23 @@ const FALLBACK_BRAND = "weebora.com";
 /** Raw search for one brand: tries a preferences-enriched keyword first,
  * falls back to city+sport alone if that returns nothing. No city
  * filtering here — that decision belongs to the caller, which needs to
- * know whether filtering actually found something or not. */
-async function rawSearchOneBrand(hofj: HofjClient, slots: Slots, brand?: string): Promise<SearchProduct[]> {
+ * know whether filtering actually found something or not. Every result is
+ * tagged with the brand it was actually searched under — required
+ * downstream by the booking pipeline (see Candidate.brand's doc,
+ * types.ts) — `brand` is always explicit here, never left to the
+ * client's own default, precisely so this tag is always right. */
+async function rawSearchOneBrand(hofj: HofjClient, slots: Slots, brand: string): Promise<BrandedProduct[]> {
+  const tag = (products: SearchProduct[]): BrandedProduct[] => products.map((p) => ({ ...p, brand }));
   if (slots.preferences) {
     const withPrefs = await hofj.search({ keyword: buildKeyword(slots, true), topN: 15, brand });
-    if (withPrefs.data.products.length > 0) return withPrefs.data.products;
+    if (withPrefs.data.products.length > 0) return tag(withPrefs.data.products);
   }
   const plain = await hofj.search({ keyword: buildKeyword(slots, false) || undefined, topN: 15, brand });
-  return plain.data.products;
+  return tag(plain.data.products);
 }
 
 export interface SearchResult {
-  candidates: SearchProduct[];
+  candidates: BrandedProduct[];
   /** False whenever the proposal is going to be in a city the traveller
    * didn't specifically confirm — no city given at all, or one given that
    * matched nothing. classify() turns this into an explicit compromise
@@ -304,7 +317,7 @@ export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<
   // (available in a different week) is exactly the "compromise" case the
   // dialogue should be able to offer, not silently drop. classify() does
   // the date comparison itself once we have the ranked candidates.
-  const primaryRaw = await rawSearchOneBrand(hofj, slots);
+  const primaryRaw = await rawSearchOneBrand(hofj, slots, hofj.brand);
   if (slots.city) {
     const filtered = filterToMatchingCity(slots, primaryRaw);
     if (filtered.length > 0) return { candidates: filtered, locationMatched: true };

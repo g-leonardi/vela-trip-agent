@@ -40,7 +40,11 @@
   risultato di ricerca valido) — prima produceva un loop di "sistema
   lento" inutile; ora viene scartato e si propone il prossimo candidato
   con riconoscimento onesto in una battuta. Verificato dal vivo (per
-  caso, su un secondo prodotto).
+  caso, su un secondo prodotto). **CORREZIONE (2026-09-14 ~19:00, vedi la
+  sezione dedicata più sotto): questa diagnosi era sbagliata.** Non era un
+  prodotto non prenotabile lato HOFJ — era un bug nostro di brand
+  mismatch. Il meccanismo di fallback (scarta e riprova) resta comunque
+  un fix legittimo e utile come rete di sicurezza generale.
 - **`PUT /pax` con un solo passeggero su un'itinerary a N adulti dava
   sempre 502** (dettaglio upstream:
   `changePaxDetails.paxNumberChanged`, HTTP reale 400 dietro il 502
@@ -116,6 +120,50 @@ verifica dal vivo end-to-end non facile da forzare in modo deterministico
 reale), ma il cambiamento è meccanico e a basso rischio — passa un
 parametro già esistente a un ramo che prima lo ignorava, nessuna nuova
 logica di business.
+
+## CORREZIONE MAGGIORE: il "prodotto non prenotabile" era un bug nostro di brand mismatch (2026-09-14 ~19:00)
+
+Giuseppe ha chiesto perché non fosse riuscito a prenotare
+[lanzarote-padel-getaway-week](https://weebora.com/en/destinations/lanzarote/tocahub-lanzarote/lanzarote-padel-getaway-week)
+(lo vedeva coi suoi occhi sul sito) e ha proposto una diagnosi precisa
+sulla regex data ("dal 15 al 21 settembre" → la regex non ancorata
+aggancia "21 settembre" invece di "15"). **La sua analisi della regex era
+corretta al 100%** (verificato isolatamente: `match()` restituisce
+davvero day=21) — ma NON era la causa di questo fallimento specifico:
+ritestato dal vivo, `dateFrom` risultava sempre la data giusta (l'LLM
+spezza correttamente il range prima che la regex la veda).
+
+**La causa reale**, trovata confrontando chiamate dirette all'API HOFJ
+con `brand=weebora.com` (200 OK) contro `brand=terrarossa.com` (404
+NOT_FOUND_ERROR, lo stesso identico errore già documentato come "prodotto
+non prenotabile"): quando la ricerca padel ripiega su Weebora, il
+`Candidate` risultante non portava QUALE brand l'avesse prodotto, e
+l'intera pipeline di prenotazione chiamava sempre il brand primario di
+default (`terrarossa.com`), mai quello reale. **Ogni singolo prodotto
+padel da Weebora era destinato a fallire in prenotazione, sempre** — non
+un capriccio del catalogo HOFJ, un bug nostro di field-forwarding.
+
+**Corretto**: `brand` propagato esplicitamente in `Candidate`,
+`ConversationState`, ogni metodo di `HofjClient` che tocca un itinerary, e
+ogni risultato di ricerca taggato col brand reale con cui è stato trovato
+(mai più affidato al default implicito del client). La regex del range
+data è stata comunque corretta (bug reale e latente, anche se non la
+causa di questo caso — vedi `dates.ts`, nuovo pattern "dal X al Y mese").
+
+**Verificato dal vivo, end-to-end, per davvero**: lo stesso prodotto 186
+che ha fallito OGNI volta tutto il giorno ora crea un vero itinerary
+(`itineraryId: "tnwhugsh4uzr"`), ri-verifica il prezzo reale (1092€ →
+2184€), scrive customer/pax reali, e ottiene un vero PaymentIntent Stripe
+**`succeeded`** (`pi_3UFcurRpam3eRRKb1Zyctjle`, 2184€) — fallendo solo
+all'ultimissimo passo (`POST /v1/bookings`, il bloccante `paymentType`
+già documentato e non risolvibile da qui). Prima di oggi questo prodotto
+non aveva mai superato nemmeno il primo passo.
+
+Sul "come mai stanno uscendo tutti questi bug": escono perché li stiamo
+cercando attivamente con test dal vivo reali (e verificando ogni ipotesi
+contro l'API diretta, non fidandosi di un messaggio d'errore plausibile
+ma generico) — non perché il codice stia peggiorando. Erano già lì,
+mascherati da errori che sembravano problemi di terzi.
 
 ## Decisioni di Giuseppe sull'elenco del 2026-09-14 ~18:00
 

@@ -720,6 +720,90 @@ a comando), ma il cambiamento è meccanico e a basso rischio — instrada un
 parametro già esistente verso un ramo che prima lo ignorava, nessuna
 nuova logica di business introdotta.
 
+### CORREZIONE: il "prodotto non prenotabile" di Lanzarote non era un bug di HOFJ — era nostro (2026-09-14 ~19:00)
+
+Dopo il fix sopra, Giuseppe ha chiesto perché non fosse comunque riuscito a
+completare la prenotazione di
+[lanzarote-padel-getaway-week](https://weebora.com/en/destinations/lanzarote/tocahub-lanzarote/lanzarote-padel-getaway-week)
+— un prodotto che vedeva con i suoi occhi esistere sul sito — e ha proposto
+una sua diagnosi precisa: la regex di `dates.ts` che estrae giorno+mese non
+è ancorata all'inizio della frase, quindi su "dal 15 al 21 settembre" salta
+il "15" (non direttamente attaccato a "settembre", c'è "al 21" in mezzo) e
+aggancia "21 settembre" — risolvendo silenziosamente alla data sbagliata.
+
+**Verificato subito, empiricamente, fuori dal codice**: la sua analisi
+della regex era corretta al 100% —
+`"dal 15 al 21 settembre".match(dayMonth)` restituisce davvero `day=21`,
+non 15. Un bug vero, riproducibile, indipendente da qualunque congettura.
+
+**Ma non era la causa di questo fallimento specifico.** Ritestando dal
+vivo la stessa identica frase in una sessione pulita, `dateFrom` risultava
+`"2026-09-17"` (la data negoziata), mai 21 — perché l'LLM, seguendo
+l'istruzione del prompt, spezza correttamente "dal 15 al 21 settembre" nei
+due campi separati `dateFromText`/`dateToText` prima che la regex veda
+l'uno o l'altro isolatamente. Confermando via query dirette all'API HOFJ
+(bypassando completamente il nostro Worker), la causa reale è emersa:
+
+```
+POST /v1/itineraries?brand=weebora.com   productId=181 → 200 OK, itinerario creato
+POST /v1/itineraries?brand=terrarossa.com productId=181 → 404 NOT_FOUND_ERROR
+POST /v1/itineraries?brand=weebora.com   productId=186 → 200 OK, itinerario creato
+POST /v1/itineraries?brand=terrarossa.com productId=186 → 404 NOT_FOUND_ERROR (stesso identico errore già documentato come "prodotto non prenotabile")
+```
+
+**Il bug vero, e nostro**: quando la ricerca padel ripiega su Weebora
+(`searchCandidates()`, fallback già esistente da inizio sessione), il
+`Candidate` risultante non portava con sé QUALE brand l'avesse prodotto —
+e tutta la pipeline di prenotazione (`createItinerary`, `getItinerary`,
+`putCustomer`, `putPax`, `getPaymentIntent`, `confirmBooking`) chiamava
+sempre il brand primario di default del client (`terrarossa.com`,
+`HOFJ_BRAND`), MAI il brand reale del prodotto trovato. Risultato: **ogni
+singolo candidato padel proveniente dal fallback Weebora era destinato a
+fallire in prenotazione, sempre, al 100%** — non "a volte, per un
+capriccio del catalogo". Il bug #3 di "Tre bug trovati... 2026-09-15
+~16:40" più sopra (Lanzarote id 186, `NOT_FOUND_ERROR`) era esattamente
+questo, diagnosticato male all'epoca come un problema di inventario HOFJ
+("prodotto non prenotabile") quando era in realtà un problema nostro di
+field-forwarding interno — un mismatch di brand, non di disponibilità.
+Questa correzione resta qui esplicitamente, non cancellata, insieme
+all'entry originale: fa parte della cronologia reale del debugging, non
+solo il risultato finale.
+
+**Corretto** propagando `brand` in modo esplicito attraverso tutta la
+catena: `Candidate.brand` e `ConversationState.brand` (nuovi campi,
+`types.ts`), ogni risultato di ricerca taggato con il brand usato per
+trovarlo (`rawSearchOneBrand()`, `matcher.ts` — mai più affidato al
+default implicito del client), e ogni metodo di `HofjClient` che opera su
+un itinerario ormai richiede `brand` esplicito invece di un default
+silenzioso (`hofj/client.ts`). Aggiunta anche una regressione nel fix
+originario della regex data (v. sopra) perché, seppur non la causa di
+QUESTO fallimento, è un bug reale e latente che avrebbe potuto colpire in
+altre frasi/altri turni dove l'LLM non spezza correttamente il range.
+
+**Verificato dal vivo, end-to-end, per davvero**: lo stesso prodotto 186
+(Weebora, Lanzarote) che ha fallito sistematicamente OGNI singola volta
+per tutta la giornata — creazione carrello reale
+(`itineraryId: "tnwhugsh4uzr"`), ri-verifica prezzo reale (1092€ → 2184€,
+catturata onestamente), scrittura customer/pax reali, e un vero
+PaymentIntent Stripe **`succeeded`** (`pi_3UFcurRpam3eRRKb1Zyctjle`,
+2184€, `metadata.checkoutRefId` combaciante con l'itineraryId reale)
+— fallito SOLO all'ultimissimo passo, `POST /v1/bookings`, con l'errore
+502 già documentato e non risolvibile da qui (bug HOFJ reale, questo sì,
+confermato ore prima con `paymentType` sia "full" che "plan"). Prima di
+oggi, questo prodotto non aveva MAI superato nemmeno il primo passo
+(`createItinerary`).
+
+**Sulla domanda di Giuseppe "come mai stanno venendo fuori tutti questi
+bug"**: la risposta onesta è che escono perché li stiamo cercando
+attivamente con test dal vivo reali, non perché il codice stia
+peggiorando — ogni bug qui sopra esisteva silenziosamente PRIMA di essere
+trovato, e la maggior parte (questo compreso) era mascherata da un errore
+generico che sembrava un problema di terzi ("sistema lento", "prodotto non
+disponibile lato fornitore"). Il metodo che li sta facendo emergere ora
+(test dal vivo mirati, verifica diretta contro l'API bypassando il nostro
+Worker per isolare dove sta davvero il problema, mai accontentarsi di un
+messaggio d'errore plausibile) è esattamente quello richiesto dal brief.
+
 ## 5. Padronanza API (10%)
 - API fornita da Vela: endpoint chiave usati, autenticazione, limiti osservati:
 - Come l'abbiamo integrata / eventuali workaround:
