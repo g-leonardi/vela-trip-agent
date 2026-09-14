@@ -54,6 +54,21 @@
   (redazione chiave HOFJ + chiave Stripe, entrambe già verificate assenti
   nelle versioni committate finora).
 
+## Near-miss di sicurezza, risolto (2026-09-15 ~17:00)
+
+Un export di `/agent-log/` ha inizialmente lasciato un frammento della
+chiave Stripe (troncato dalla formattazione del transcript, non la
+stringa esatta cercata dalla mia prima redazione a match esatto) — **il
+push a GitHub è stato bloccato dalla loro secret scanning protection
+prima di raggiungere il repository pubblico**, il commit non è mai
+uscito dalla macchina locale. Corretto con redazione a pattern (regex su
+`rk_/sk_/pk_test_...`, non più solo stringa esatta) invece che
+riprovare lo stesso approccio fragile, poi commit locale corretto via
+`amend` (sicuro: il commit incriminato non era mai stato pubblicato) e
+ripush verificato pulito. Nessuna chiave reale è mai stata esposta
+pubblicamente. Lezione applicata: le redazioni future usano pattern,
+non solo match esatti.
+
 ## Limiti di scope accettati consapevolmente (documentati in ARCHITECTURE.md, non bug)
 
 - Nessun test diretto su `conversation.ts` (la Durable Object) — solo
