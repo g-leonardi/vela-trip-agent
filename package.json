@@ -9,7 +9,9 @@
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "prompt-suite": "node scripts/prompt-suite.mjs",
+    "prompt-suite:run": "node scripts/prompt-suite.mjs --run"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.9",

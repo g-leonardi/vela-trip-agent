@@ -63,7 +63,12 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     vivo (multi-turno, rinegoziazione budget a metà proposta, rifiuto e
     proposta successiva, re-verifica silenziosa che cattura un prezzo
     cambiato davvero) — visibili come traffico reale in `/agent-log/`, non
-    solo dichiarati qui.
+    solo dichiarati qui. Aggiunta successivamente (2026-09-14 ~19:30) una
+    copertura reale, anche se non in CI, dello strato NLU
+    (`scripts/prompt-suite.mjs` — vedi sotto): non elimina il gap sulla DO
+    nel suo insieme, ma copre esattamente la parte più a rischio e meno
+    testabile deterministicamente, cioè quello che l'AI estrae davvero da
+    una frase reale.
   - **Apertura carrello reale prima della proposta (invece che dopo la
     conferma)**: valutata e scartata esplicitamente da Giuseppe
     (2026-09-14 ~18:00), non solo rimandata. L'architettura resta
@@ -320,6 +325,46 @@ comprensione e fraseggio in linguaggio naturale:
    dal vivo: un productId stringa dà 400 `ZodError` dall'upstream del brand
    site. Corretto lato client (`HofjClient.createItinerary` forza
    `Number(productId)`), con commento che documenta il perché.
+
+### Suite di prompt reali, per coprire lo strato NLU dove nessun test unitario può arrivare (2026-09-14 ~19:30)
+
+Giuseppe ha proposto (giustamente) di formalizzare la lista informale di
+"prompt che funzionano" già data a voce in una suite ripetibile — con
+l'accortezza esplicita di stare attenti al costo, dato che la quota
+gratuita giornaliera di Workers AI si era già esaurita in sessione (vedi
+sopra) e ogni chiamata da quel punto passa dal fallback Anthropic Haiku,
+a pagamento sui $5 di budget dichiarati per l'intera challenge.
+
+**Design scelto apposta per il costo**: `scripts/prompt-suite.mjs`, uno
+script standalone, **non** dentro `npm test`/CI (girerebbe ad ogni commit,
+spendendo soldi reali ad ogni push). Ogni caso è una conversazione fresca,
+quasi sempre un solo messaggio (≈1-2 chiamate AI reali: `interpret()` +
+`say()`), per tenere il numero di chiamate prevedibile e basso. Testa
+SOLO l'estrazione NLU strutturata (`state.slots`, `state.language`) contro
+frasi reali già usate dal vivo — non il testo della risposta (che l'LLM
+formula diversamente ad ogni run per design) e non la logica di
+business/booking (già deterministica e coperta da unit test altrove,
+zero costo). Modalità dry-run di default (stampa i casi e la stima delle
+chiamate, non chiama nulla); `--run` per eseguire per davvero; `--only=`
+per filtrare un sottoinsieme.
+
+**12 casi**, quasi tutti presi da conversazioni reali già testate in
+questa sessione (sessionId `81992bfd-...`, la target customer journey
+inglese, `verify-stripe-01`, ecc.) — non inventati apposta per far
+passare il test, ma le stesse identiche frasi che avevano già causato bug
+reali oggi (il range di date "dal 15 al 21 settembre", "9/10/2026", "il 9
+di ottobre", "budget illimitato", "il miglior insegnante... in Nord
+Europa"), più qualche caso esplicitamente segnalato come "non ancora
+testato dal vivo" in una lista precedente (switch di lingua a metà
+conversazione, un gruppo non numerabile che non deve mai diventare un
+numero inventato, una data relativa inglese "in 5 days").
+
+**Eseguito per davvero una volta, dopo un pilota su un solo caso per
+validare lo script prima di spendere sull'intera batteria**: pilota 1/1,
+poi batteria completa **12/12 passati**, ~26 chiamate AI totali stimate.
+Nessun fallimento — un segnale onesto che lo strato NLU regge bene su
+questo campione reale, non solo sulle frasi isolate già verificate a
+mano una per volta.
 
 ### Bug reale scoperto da Giuseppe testando l'app live (2026-09-15 ~15:25)
 
