@@ -3,10 +3,51 @@
 > Scheletro preparato PRIMA di leggere il brief completo e PRIMA di premere Start.
 > Da riempire man mano, non tutto in fondo sotto pressione di tempo.
 
+**URL live**: https://vela-trip-agent.gleonardi87.workers.dev — deployato per
+la prima volta 2026-09-14 ~14:30 (vedi commit history per i deploy
+successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
+
 ## 1. Prototipo funzionante (25%)
 - Flusso di booking reale che vogliamo far completare end-to-end:
-- Decisioni prese e perché:
+  Intento in linguaggio naturale → slot-filling (sport, città, data,
+  budget) → ricerca su HOFJ (`/v1/recommendations/search`, Terrarossa con
+  fallback Weebora per il padel) → classificazione deterministica
+  exact/compromise/none → **una** proposta con prezzo reale → conferma →
+  raccolta dati viaggiatore → apertura carrello reale
+  (`POST /v1/itineraries`) → ri-verifica silenziosa prezzo/disponibilità
+  sullo snapshot reale del carrello → scrittura customer/pax reali
+  (`PUT .../customer`, `PUT .../pax`) → tentativo pagamento Stripe
+  (`GET .../payment`) → `POST /v1/bookings`. Verificato dal vivo fino
+  all'apertura del carrello reale con dati reali compresi; gli ultimi due
+  step sono bloccati da due bug upstream documentati sotto (non nostri),
+  non da limiti del nostro codice — vedi sezione 5.
+- Decisioni prese e perché: vedi il resto di questo documento, in
+  particolare le sezioni 4 (metodo agentico → verifica qualità AI dal vivo)
+  e 5 (padronanza API → note di esplorazione ed eccezioni upstream trovate).
 - Cosa NON abbiamo implementato e perché (scope cut consapevoli):
+  - **Indirizzo di fatturazione completo**: `CustomerData.address` richiede
+    street1/postalCode/city/region/countryCode, ma chiedere tutti questi
+    campi a voce sarebbe innaturale e fuori scope rispetto al pattern
+    conversazionale richiesto (sport/città/date/budget/preferenze). Si
+    chiedono a voce solo nome, cognome, email, telefono, città; street1 e
+    postalCode vengono compilati con placeholder onesti ("N/A"/"00000"), il
+    countryCode è dedotto dal paese del prodotto scelto. Documentato qui
+    esplicitamente perché è un compromesso reale sui dati inviati all'API,
+    non nascosto.
+  - **Ripresa di una conversazione "failed"**: se il pagamento/booking
+    fallisce, la conversazione termina (nessun meccanismo di retry
+    asincrono/notifica). In produzione servirebbe una coda + notifica al
+    viaggiatore quando l'inventario/pagamento torna disponibile — fuori
+    scope per il tempo disponibile, ma l'itineraryId resta salvato nello
+    stato della DO, quindi il carrello reale non è perso, solo non
+    ripreso automaticamente.
+  - **Selezione alternativa di hotel/camera**: per i prodotti "pacchetto"
+    (hotelSelection:true, allowAccommodationList:false — il caso comune
+    osservato su Terrarossa) l'accommodation è già pre-assegnata dal
+    prodotto stesso; non abbiamo costruito uno step conversazionale per
+    scegliere tra hotel alternativi (violerebbe comunque il vincolo "mai
+    una lista tra cui scegliere" — coerente con lo scope, non solo un
+    taglio per il tempo).
 
 ## 2. Architettura di scalabilità (25%)
 - Bottleneck previsti e come li abbiamo affrontati:
