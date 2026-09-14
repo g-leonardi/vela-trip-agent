@@ -244,6 +244,44 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
      riepilogo finale — è pensato per reggere senza mai guardare lo
      schermo, non come optional ma come vincolo di design dall'inizio.
 
+### Un nome, e la cornice "wearable 2029" resa visibile (2026-09-14 ~23:10)
+
+Fino a questo punto l'unica interfaccia era etichettata genericamente
+"Vela" — il nome della challenge/azienda, non un vero nome di prodotto.
+Giuseppe ha chiesto di sistemare l'interfaccia (rimanendo minimale, dato
+che "non è pensata come un'interfaccia") e di renderla riconoscibile come
+prototipo di qualcosa che vivrà altrove — un dispositivo indossabile nel
+2029, non un sito.
+
+- **Nome scelto: Rally.** Un rally, nel tennis/padel, è proprio lo scambio
+  di colpi — la stessa forma della negoziazione slot-filling di questo
+  agente (proposta, compromesso dichiarato, conferma, ripeti). Corto,
+  facile da dire come wake-word a un dispositivo vocale. "Vela" resta
+  visibile come sotto-titolo ("un progetto Vela") — il prodotto ha un
+  nome proprio, l'azienda/challenge dietro resta esplicita, non nascosta.
+- **La cornice "wearable" è ora resa visibile, non solo dichiarata a
+  parole**: l'area di interazione (microfono, stato, ultima risposta) è
+  racchiusa in uno "squircle" — la stessa geometria di un quadrante da
+  smartwatch — con una didascalia esplicita sopra: "Anteprima da browser —
+  nel 2029 Rally vive al polso, non su uno schermo. Questo è solo un
+  prototipo." Non un claim isolato nel testo: la forma stessa dell'oggetto
+  visivo lo dimostra.
+- **Feedback di elaborazione, prima assente**: non c'era alcuna evidenza
+  visiva che il sistema stesse processando qualcosa tra l'invio di un
+  messaggio e la risposta — un vuoto specialmente fastidioso per i passi
+  realmente lenti (apertura carrello vero, pagamento, conferma booking,
+  che incatenano diverse chiamate API reali in sequenza). **Aggiunto**: un
+  terzo stato visivo del microfono ("thinking", pulsazione ambra distinta
+  da "listening" verde e "speaking" spento) attivo per tutta l'attesa; un
+  messaggio di stato che si aggiorna in due fasi (breve dopo ~3s, più
+  esplicito dopo ~7.5s); e solo per l'attesa lunga, l'assistente lo dice
+  anche a voce ("ci sto mettendo un po' più del solito a confermare la
+  prenotazione, scusa l'attesa") — non per ogni risposta, solo quando
+  l'attesa è davvero degna di nota, come richiesto esplicitamente. Il
+  messaggio è scelto in base allo stage precedente noto lato client, così
+  un "sì" dopo una proposta (che scatena la pipeline pesante reale) ha una
+  frase specifica, non generica.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
