@@ -263,8 +263,8 @@ mascherati da errori che sembravano problemi di terzi.
 
 - **Video 3-5 minuti** dell'acquisto reale end-to-end — non ancora
   registrato.
-- **Key hunt oltre alla chiave 1** — mai ripreso in questa sessione
-  (bonus, non richiesto).
+- ~~Key hunt oltre alla chiave 1~~ — **fatto da Giuseppe fuori da questa
+  sessione**, tutte trovate.
 - **Export finale di `/agent-log/`** — aggiornato periodicamente durante
   la sessione, va rifatto un'ultima volta a ridosso della consegna vera
   (redazione chiave HOFJ + chiave Stripe, entrambe già verificate assenti
