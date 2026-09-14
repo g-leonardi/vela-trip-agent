@@ -50,9 +50,88 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     taglio per il tempo).
 
 ## 2. Architettura di scalabilità (25%)
-- Bottleneck previsti e come li abbiamo affrontati:
-- Load test: strumento usato (k6), scenario simulato, numeri ottenuti:
-- Cosa faremmo per scalare 10x / 100x oltre quanto implementato:
+
+- **Load test: strumento e scenario** (`loadtest/booking-flow.js`, k6,
+  eseguito dal vivo contro l'URL live 2026-09-14 ~14:35). Deliberatamente
+  **non** un singolo scenario che martella `/api/message` a piena
+  concorrenza: la API key HOFJ ha un rate limit di 120 richieste/minuto
+  condiviso (vedi sezione 5), quindi uno scenario ad alta concorrenza usa
+  messaggi che forniscono un solo slot ("vorrei giocare a tennis") — questo
+  path non chiama mai HOFJ (la ricerca parte solo a slot completi), quindi
+  stressa solo Worker + Durable Object + Workers AI, senza rischiare la
+  quota condivisa. Uno scenario separato, deliberatamente piccolo (3 VU,
+  10 iterazioni totali), esercita il path di ricerca reale contro HOFJ per
+  avere un campione di latenza onesto sulla parte esterna della pipeline,
+  senza abusare della quota. Vedi il commento in testa al file per il
+  dettaglio del perché.
+
+- **Numeri reali ottenuti** (100 VU di picco, rampa 20s→30s→20s,
+  `slot_filling_burst`; 3 VU / 10 iterazioni, `full_booking_search`):
+  ```
+  http_req_duration: avg=4.87s  p50=2.79s  p90=14.99s  p95=15s  max=15s
+  http_req_failed:   11.95% (79/661) — quasi tutti timeout client (15s)
+  full-search (path che chiama HOFJ davvero): 9/10 riuscite, ~90%
+  ```
+  Soglie dichiarate nel file (`p95<4000ms`, `error rate<2%`) **fallite
+  entrambe** a 100 VU concorrenti — numero vero, non aggiustato a
+  posteriori per far tornare i conti.
+
+- **Bottleneck reale identificato**: non è HOFJ (rimasto sotto quota, solo
+  10 chiamate reali nel test), non è la Durable Object (ogni conversazione
+  ha la sua, zero contesa cross-conversazione per costruzione), non è la
+  route statica. È **Workers AI**: ogni turno fa fino a 2 chiamate
+  sequenziali (`interpret()` per la comprensione + `say()` per il
+  fraseggio, entrambe su Llama 3.3 70B, ciascuna con fino a 3 tentativi in
+  caso di errore transiente — vedi sezione 4). A bassa concorrenza questo
+  costa 2-4s percepiti; a 100 richieste simultanee la capacità di
+  inferenza condivisa del piano Workers AI si satura e la coda spinge
+  la latenza fino al timeout client di 15s per circa il 12% delle
+  richieste. È il collo di bottiglia onesto di un'architettura che fa 2
+  chiamate LLM sequenziali per turno su un motore multi-tenant — non un
+  bug nel nostro codice, ma un limite architetturale reale da affrontare
+  prima di scalare.
+
+- **Cosa faremmo per scalare 10x / 100x**:
+  1. **Eliminare la seconda chiamata AI dove possibile.** `interpret()` e
+     `say()` non si possono semplicemente fondere in una chiamata sola:
+     tra i due c'è la logica di business (ricerca HOFJ, classificazione
+     exact/compromise/none) che decide COSA dire, e dipende da dati
+     esterni recuperati DOPO `interpret()` — fonderle vorrebbe dire far
+     indovinare al modello anche l'esito della ricerca, esattamente il
+     tipo di invenzione che il pattern di confidenza categorico vuole
+     evitare. La correzione reale è diversa: la maggior parte dei
+     `SayDirective` (sezione `engine/ai.ts`) espone già tutti i fatti in
+     forma strutturata — si presta a un fraseggio a **template
+     deterministico** invece che a una chiamata LLM, riservando il
+     modello linguistico al solo `interpret()` (dove serve comprensione
+     reale, non solo compilazione di fatti noti). Non implementato in
+     questa sessione perché comprometterebbe la naturalezza/calore del
+     tono richiesto dal manifesto ("parla come faresti al telefono") — un
+     compromesso deliberatamente rimandato, non dimenticato: la via di
+     mezzo più promettente è un piccolo set di varianti template per
+     directive scelte a rotazione/casualmente, non frasi fisse.
+  2. **Modello a due livelli**: un modello piccolo/veloce (es. Llama 3.2
+     3B) per l'estrazione slot (compito semplice, strutturato), riservando
+     il modello 70B solo al fraseggio finale, dove la qualità linguistica
+     conta davvero.
+  3. **AI Gateway di Cloudflare** davanti a Workers AI per caching delle
+     risposte ripetute, code/backpressure gestite invece di un timeout
+     secco, e osservabilità sulla saturazione reale del modello.
+  4. **UX che assorbe la latenza invece di nasconderla**: un "sto
+     pensando…" streaming/percepito lato frontend invece di un'attesa
+     muta fino al timeout — coerente con il vincolo "vocale, attenzione
+     non sullo schermo": l'utente può aspettare una risposta parlata un
+     paio di secondi più a lungo se sa che il sistema sta ancora
+     lavorando, molto meno se lo schermo sembra bloccato.
+  5. **Rate limiter esplicito verso HOFJ** (un semplice token bucket in
+     una DO singleton o KV) per non affidarsi solo al fatto che il nostro
+     traffico reale resti sotto 120/min per costruzione — a 10x/100x
+     traffico reale non è più garantito, va imposto lato nostro prima che
+     lo imponga HOFJ con dei 429.
+  6. Le Durable Object stesse non sono il collo di bottiglia e scalano
+     già correttamente per costruzione (una per conversazione, distribuite
+     automaticamente da Cloudflare) — non richiedono cambi architetturali
+     per 10x/100x, solo il layer AI e il layer HOFJ ne richiedono.
 
 ## 3. Vision — "sei uscito dal marketplace?" (20%)
 - Qual è il marketplace da cui ci si aspetta di uscire:
