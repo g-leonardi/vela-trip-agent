@@ -85,7 +85,19 @@ export class HofjClient {
   private async request<T>(
     method: string,
     path: string,
-    opts: { query?: Record<string, string | number | undefined>; body?: unknown; brand?: string } = {},
+    opts: {
+      query?: Record<string, string | number | undefined>;
+      body?: unknown;
+      brand?: string;
+      /** Set for any POST that isn't a documented upsert — retrying a
+       * transient error on a true "create" call risks leaving a second,
+       * orphaned resource behind if the first attempt actually succeeded
+       * server-side and only the response was lost. POST /v1/itineraries
+       * is exactly that case (spec: "Create a new itinerary"); POST
+       * /v1/bookings is explicitly documented as an upsert keyed by
+       * itineraryId, so it stays safe to retry. */
+      noRetry?: boolean;
+    } = {},
   ): Promise<T> {
     const url = new URL(this.base + path);
     url.searchParams.set("brand", opts.brand ?? this.brand);
@@ -105,10 +117,7 @@ export class HofjClient {
       });
 
     let res = await doFetch();
-    if (res.status === 429 || res.status === 502 || res.status === 503) {
-      // Safe to retry once, including POST: /itineraries and /bookings are
-      // documented as upserts (same key returns the existing resource
-      // rather than creating a duplicate).
+    if (!opts.noRetry && (res.status === 429 || res.status === 502 || res.status === 503)) {
       await new Promise((r) => setTimeout(r, 400));
       res = await doFetch();
     }
@@ -159,6 +168,7 @@ export class HofjClient {
     // number check and 400s on a numeric string. Always coerce.
     return this.request("POST", "/v1/itineraries", {
       body: { ...input, productId: Number(input.productId), currency: "EUR" },
+      noRetry: true, // creates a new cart each call — see request()'s noRetry doc
     });
   }
 

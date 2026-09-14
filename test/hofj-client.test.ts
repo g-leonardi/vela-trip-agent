@@ -93,4 +93,19 @@ describe("HofjClient", () => {
     expect(sentBody.productId).toBe(988);
     expect(typeof sentBody.productId).toBe("number");
   });
+
+  it("does NOT retry createItinerary on a transient error (unlike bookings, it's not an upsert)", async () => {
+    // Regression: an earlier version retried every POST uniformly, which
+    // risks leaving a second, orphaned real cart behind if the first
+    // createItinerary attempt actually succeeded server-side and only the
+    // response was lost to the transient error.
+    const fetchMock = vi.fn(async () => jsonResponse(502, { detail: "upstream hiccup" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new HofjClient(fakeEnv());
+    await expect(
+      client.createItinerary({ productId: 988, startDate: "2026-09-25", adults: 1, rooms: 1 }),
+    ).rejects.toMatchObject({ status: 502 });
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no retry
+  });
 });

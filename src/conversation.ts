@@ -142,13 +142,23 @@ export class ConversationDO extends DurableObject<Env> {
     return { reply, state };
   }
 
-  /** AI-layer hiccups (transient Workers AI errors, exhausted) are not
-   * business failures — the conversation stays exactly where it was and we
-   * just ask the traveller to repeat themselves. Only real pipeline
-   * failures (HOFJ errors past this point) end the conversation. */
+  /** Not every thrown error should end the conversation:
+   * - AI-layer hiccups (transient Workers AI errors, exhausted) aren't
+   *   business failures at all — stay exactly where we were.
+   * - A *retryable* HOFJ error (429/502/503) hit during search/discovery,
+   *   before any real cart exists, is also worth surviving — the
+   *   traveller hasn't committed to anything yet, so failing the whole
+   *   conversation over a rate limit blip is worse than just asking them
+   *   to try again. Only a genuinely fatal failure inside the real
+   *   booking pipeline (handled explicitly in attemptPayment /
+   *   confirmPaymentAndBook, which set stage="failed" themselves with a
+   *   specific reason) should be terminal. */
   private async handleUnexpectedError(state: ConversationState, err: unknown): Promise<string> {
     if (err instanceof AiUnavailableError) {
       return "Scusa, non ho capito bene — puoi ripetere?";
+    }
+    if (err instanceof HofjApiError && err.retryable) {
+      return "Il sistema è un po' lento in questo momento, puoi ripetere?";
     }
     state.stage = "failed";
     state.failureReason = err instanceof Error ? err.message : String(err);
