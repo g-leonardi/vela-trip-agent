@@ -60,6 +60,25 @@ Passaggi (con due inciampi reali, non solo il percorso pulito):
    più economico.
 5. Chiave: **`p_g_np3dww01`** (SB Plaza Europa, 184€) — accettata.
 
-## Chiave 3
+## Chiave 3 — "The seal" (+60m)
+
+Consegna: un artefatto WASM servito a `/api/seal.wasm`, esporta `seal(ptr,
+len)` e `memory`. Input: la chiave precedente, due punti, l'email
+dell'account, in UTF-8. Output: il valore ritornato, come 8 cifre esadecimali
+minuscole.
+
+Passaggi:
+1. `curl -o seal.wasm https://vela-dev-challenge.web.app/api/seal.wasm` (143
+   byte, nessun import richiesto — solo `memory` e `seal` esportati, verificato
+   con `WebAssembly.Module.exports/imports` prima di istanziare).
+2. Con Node: istanziato il modulo, scritto `"p_g_np3dww01:gleonardi87@gmail.com"`
+   (UTF-8) in un punto qualsiasi della memoria lineare, chiamato
+   `seal(ptr, len)`. Risultato stabile su offset diversi (0, 64, 2048) — è un
+   hash puro, non legge byte residui.
+3. Risultato `-666079054` interpretato come uint32 → hex a 8 cifre:
+   `d84c70b2`.
+4. Chiave: **`d84c70b2`** — accettata.
+
+## Chiave 4
 
 (da trovare)
