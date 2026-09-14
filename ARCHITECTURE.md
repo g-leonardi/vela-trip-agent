@@ -134,8 +134,59 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
      per 10x/100x, solo il layer AI e il layer HOFJ ne richiedono.
 
 ## 3. Vision — "sei uscito dal marketplace?" (20%)
-- Qual è il marketplace da cui ci si aspetta di uscire:
-- La nostra idea per uscirne:
+
+- **Qual è il marketplace da cui ci si aspetta di uscire.** Non è astratto:
+  l'abbiamo visto letteralmente durante l'esplorazione dell'API. HOFJ è
+  l'infrastruttura di distribuzione dietro almeno tre "brand" con siti
+  separati — Weebora, Terrarossa, House of Journey — ciascuno una vetrina
+  con lo stesso pattern di sempre: catalogo, filtri, griglia di risultati,
+  pagina prodotto, confronto. Il marketplace non è un concorrente astratto
+  da battere: è la forma di interfaccia che l'API stessa presuppone lato
+  frontend (i parametri di `/v1/recommendations/search` — categoria,
+  prezzo, data, stelle, distanza, ordinamento — sono letteralmente i
+  filtri di una pagina di risultati). Il "marketplace" è il default che
+  qualunque integrazione ovvia contro questa API produrrebbe, quasi per
+  inerzia.
+
+- **La nostra idea per uscirne**, e cosa nel prototipo la dimostra
+  concretamente, non solo a parole:
+  1. **Il giudizio si sposta dal viaggiatore al sistema.** Un marketplace
+     espone l'inventario grezzo e lascia che sia l'utente a filtrare,
+     ordinare, confrontare. Qui la ricerca (`engine/matcher.ts`) prende
+     quella responsabilità: interroga HOFJ, applica un filtro di
+     pertinenza che l'API stessa non garantisce (vedi il bug reale
+     "Forte dei Marmi per Roma" in sezione 4), classifica in
+     exact/compromise/none, e restituisce **una** proposta con un giudizio
+     già fatto — non dieci righe di tabella da confrontare da soli.
+  2. **I brand diventano infrastruttura invisibile, non destinazioni.**
+     Terrarossa è il brand tennis/padel principale, ma quando cerca
+     padel e Terrarossa non ha nulla di pertinente, la ricerca passa a
+     Weebora in automatico (verificato dal vivo: "Exclusive Padel Clinic"
+     a Milano proviene da Weebora) — **il viaggiatore non lo sa né deve
+     saperlo**. Non stiamo costruendo una quarta vetrina brandizzata
+     accanto alle altre tre: stiamo trattando l'intero grafo prodotto
+     multi-brand come un'unica fonte di inventario su cui ragionare,
+     esattamente il contrario di "un altro sito tra cui scegliere".
+  3. **L'interfaccia non è un posto in cui l'utente arriva.** Il client
+     minimale in `public/index.html` non è "una chat al posto di una
+     lista" travestita da assistente — è, esplicitamente, un microfono: lo
+     Speech Recognition/Synthesis del browser gestisce input e output
+     vocale, il testo è il ripiego dichiarato per chi non può parlare, e
+     la trascrizione è chiusa in un `<details>` perché serve a chi
+     revisiona, non è il canale principale. In una versione non
+     minimale questo stesso motore (Worker + Durable Object + engine/)
+     non cambierebbe: cambierebbe solo dove arriva il turno di
+     conversazione — un numero di telefono, un canale WhatsApp/voce, un
+     dispositivo smart speaker — mentre oggi arriva da un tasto microfono
+     su una pagina, che è la versione onesta di "l'agente arriva dove sei
+     tu" costruibile nel tempo disponibile.
+  4. **L'accessibilità non è un requisito estetico, è la prova che il
+     modello funziona.** Se l'unica interfaccia reale fosse "guarda,
+     confronta, clicca", chi non ha occhi/schermo/pazienza sarebbe
+     escluso per costruzione dal marketplace. Qui non lo è per
+     costruzione: l'intero flusso — intento, negoziazione, conferma,
+     riepilogo finale — è pensato per reggere senza mai guardare lo
+     schermo, non come optional ma come vincolo di design dall'inizio.
 
 ## 4. Metodo agentico (15%)
 - Agenti/tool usati (Claude Code, sessioni, ruoli):
@@ -292,7 +343,13 @@ engineering aggressivo. Il fallback Anthropic Haiku resta cablato in
   tuoi dati" invece di inventare una prenotazione che non è successa).
 
 ## 6. Comunicazione (5%)
-- Questo documento + README + video (opzionale)
+- Questo documento (aggiornato durante il lavoro, non a posteriori — vedi
+  i timestamp dei commit), `/agent-log/` per la trascrizione grezza della
+  sessione, e il video finale (se il tempo lo permette) di un acquisto
+  reale end-to-end. Deliberatamente non abbiamo speso tempo extra su un
+  README separato: a peso 5% contro il 25%+25% di prototipo/scalabilità,
+  la priorità dichiarata dal brief stesso era chiudere il booking reale,
+  non rifinire la documentazione.
 
 ---
 
