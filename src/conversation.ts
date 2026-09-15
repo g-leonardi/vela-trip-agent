@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { HofjApiError, HofjClient, type PaxPayload } from "./hofj/client";
 import { AiUnavailableError, interpret, say, type SayDirective } from "./engine/ai";
-import { extractMonthHint, resolveDate } from "./engine/dates";
+import { addDaysIso, datesOverlap, extractMonthHint, resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
 import { cachedDiscoveryCall, DISCOVERY_TTL_MS } from "./hofj/discoveryCache";
 import { acquireCriticalOrWait, acquireOptional, QuotaExhaustedError } from "./hofj/quotaClient";
@@ -89,6 +89,8 @@ function initialState(): ConversationState {
     productDescription: null,
     bookingRetryCount: 0,
     followUpLogged: false,
+    pastBookings: [],
+    lastDateOverlapWarning: null,
   };
 }
 
@@ -178,11 +180,29 @@ export class ConversationDO extends DurableObject<Env> {
     }
     state.messages.push({ role: "traveller", text, at: Date.now() });
 
+    // Neither "booked" nor "failed" is a true dead end. There is no "new
+    // conversation" button to send the traveller to — see
+    // tryStartNewTripAfterTerminal's own doc for why (Giuseppe,
+    // 2026-09-15: this app is meant to run screen-free; the UI here is a
+    // 2026 testing facility, not the real interaction model) — so a
+    // genuinely new trip request, typed straight into this same
+    // conversation, has to be recognized and picked up right here instead
+    // of bouncing the traveller to an affordance that doesn't exist.
+    // Set once tryStartNewTripAfterTerminal has already run interpret()
+    // and applied its result to state — skips the main flow's OWN
+    // interpret() call below so a terminal-stage new-trip message never
+    // costs a second, redundant model call for the exact same text.
+    let newTripJustStarted = false;
+
     if (state.stage === "booked") {
-      const reply = `La tua prenotazione è già confermata, codice ${state.reservationCode}. Per un nuovo viaggio apri una nuova conversazione.`;
-      state.messages.push({ role: "agent", text: reply, at: Date.now() });
-      await this.saveState(state);
-      return { reply, state };
+      if (await this.tryStartNewTripAfterTerminal(state, text)) {
+        newTripJustStarted = true;
+      } else {
+        const reply = `La tua prenotazione è già confermata, codice ${state.reservationCode}.`;
+        state.messages.push({ role: "agent", text: reply, at: Date.now() });
+        await this.saveState(state);
+        return { reply, state };
+      }
     }
 
     // The HOFJ inventory/backend/gateway is shared and can genuinely change
@@ -218,88 +238,102 @@ export class ConversationDO extends DurableObject<Env> {
         await this.saveState(state);
         return { reply, state };
       }
-      const reply = paymentRetryable
-        ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi, oppure apri una nuova conversazione.`
-        : bookingRetryable
-          ? `Il pagamento è andato a buon fine, ma non riesco ancora a confermare la prenotazione. Dimmi "riprova" per ritentare solo quella parte.`
-          : isUnverifiedBooking
-            ? `La tua prenotazione risulta effettuata: il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è andato a buon fine, il codice di riferimento è ${state.itineraryId}, e arriverà anche una mail di conferma con tutti i dettagli. È in attesa solo dell'ultima conferma tecnica interna dal sistema del fornitore (un limite noto del loro lato, non un problema della tua prenotazione). Apri una nuova conversazione se nel frattempo vuoi prenotare qualcos'altro.`
-            : isBookingFailure
-              ? `Ho riprovato più volte a confermare la prenotazione, ma il sistema del fornitore continua a non darmi il via libera — non è più un blip temporaneo. Il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è comunque andato a buon fine, e ho già registrato i tuoi dati per un follow-up manuale (riferimento: ${state.itineraryId}) — ti ricontatteremo appena si sblocca. Apri una nuova conversazione se intanto vuoi provare a prenotare qualcos'altro.`
-              : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
-      state.messages.push({ role: "agent", text: reply, at: Date.now() });
-      await this.saveState(state);
-      return { reply, state };
+      // "riprova" was already ruled out above — anything else is either
+      // pure chatter (keep the fixed reply) or a genuinely new trip (pick
+      // it up in place). Only tried when there's still something at stake
+      // (paymentRetryable/bookingRetryable false but a real payment/cart
+      // may still exist) — always safe either way, tryStartNewTripAfterTerminal
+      // only returns true on an unambiguous new-trip signal.
+      if (!wantsRetry && (await this.tryStartNewTripAfterTerminal(state, text))) {
+        newTripJustStarted = true;
+      } else {
+        const reply = paymentRetryable
+          ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi.`
+          : bookingRetryable
+            ? `Il pagamento è andato a buon fine, ma non riesco ancora a confermare la prenotazione. Dimmi "riprova" per ritentare solo quella parte.`
+            : isUnverifiedBooking
+              ? `La tua prenotazione risulta effettuata: il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è andato a buon fine, il codice di riferimento è ${state.itineraryId}, e arriverà anche una mail di conferma con tutti i dettagli. È in attesa solo dell'ultima conferma tecnica interna dal sistema del fornitore (un limite noto del loro lato, non un problema della tua prenotazione).`
+              : isBookingFailure
+                ? `Ho riprovato più volte a confermare la prenotazione, ma il sistema del fornitore continua a non darmi il via libera — non è più un blip temporaneo. Il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è comunque andato a buon fine, e ho già registrato i tuoi dati per un follow-up manuale (riferimento: ${state.itineraryId}) — ti ricontatteremo appena si sblocca.`
+                : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Dimmi pure di cosa hai bisogno e ci riprovo.`;
+        state.messages.push({ role: "agent", text: reply, at: Date.now() });
+        await this.saveState(state);
+        return { reply, state };
+      }
     }
 
     let reply: string;
+    let decisionFromInterpretation: "yes" | "no" | "unclear" | "question" = "unclear";
     try {
-      const interpretation = await interpret(this.env, state.slots, state.traveller, text, this.describeCurrentlyAsking(state));
-      const { dateFromText, dateToText, ...slotUpdates } = interpretation.slotUpdates as Record<string, unknown>;
+      if (!newTripJustStarted) {
+        const interpretation = await interpret(this.env, state.slots, state.traveller, text, this.describeCurrentlyAsking(state));
+        decisionFromInterpretation = interpretation.decision;
+        const { dateFromText, dateToText, ...slotUpdates } = interpretation.slotUpdates as Record<string, unknown>;
 
-      // Trip slots (sport/city/dates/budget/...) and traveller fields both
-      // have a "city", and interpret() isn't told which stage we're in —
-      // it has to guess from context alone. Verified live: once the trip
-      // was already confirmed and the dialogue was asking for the
-      // traveller's own city (billing address), a bare answer like
-      // "Milano" got written into BOTH state.traveller.city AND
-      // state.slots.city, silently corrupting the already-confirmed
-      // destination (a real proposal for Lanzarote ended up with
-      // slots.city == "Lecco"). Prompt instructions alone aren't a
-      // reliable enough guard for something this consequential — the trip
-      // is only ever open for renegotiation during "collecting"/
-      // "proposing", OR during "collecting_traveller" when nothing has
-      // been proposed yet (the new conversation-opening phase, see
-      // initialState()'s doc — a traveller who volunteers trip details
-      // while still being asked their name should have them captured,
-      // not dropped only to be asked again a few turns later). Once a
-      // proposal exists it's locked, so slotUpdates (except
-      // dateFromVague bookkeeping) simply isn't applied at all, regardless
-      // of what the model returned — this is what still protects a
-      // decided trip during the OTHER time collecting_traveller can
-      // happen: re-collecting data reset by a putCustomer/putPax
-      // validation error mid-booking (see the `correction` branch below).
-      const tripStillNegotiable =
-        state.stage === "collecting" ||
-        state.stage === "proposing" ||
-        (state.stage === "collecting_traveller" && state.proposal === null);
-      if (tripStillNegotiable) {
-        const resolvedDates: Partial<Slots> = {};
-        if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
-        if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
-        state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
+        // Trip slots (sport/city/dates/budget/...) and traveller fields both
+        // have a "city", and interpret() isn't told which stage we're in —
+        // it has to guess from context alone. Verified live: once the trip
+        // was already confirmed and the dialogue was asking for the
+        // traveller's own city (billing address), a bare answer like
+        // "Milano" got written into BOTH state.traveller.city AND
+        // state.slots.city, silently corrupting the already-confirmed
+        // destination (a real proposal for Lanzarote ended up with
+        // slots.city == "Lecco"). Prompt instructions alone aren't a
+        // reliable enough guard for something this consequential — the trip
+        // is only ever open for renegotiation during "collecting"/
+        // "proposing", OR during "collecting_traveller" when nothing has
+        // been proposed yet (the new conversation-opening phase, see
+        // initialState()'s doc — a traveller who volunteers trip details
+        // while still being asked their name should have them captured,
+        // not dropped only to be asked again a few turns later). Once a
+        // proposal exists it's locked, so slotUpdates (except
+        // dateFromVague bookkeeping) simply isn't applied at all, regardless
+        // of what the model returned — this is what still protects a
+        // decided trip during the OTHER time collecting_traveller can
+        // happen: re-collecting data reset by a putCustomer/putPax
+        // validation error mid-booking (see the `correction` branch below).
+        const tripStillNegotiable =
+          state.stage === "collecting" ||
+          state.stage === "proposing" ||
+          (state.stage === "collecting_traveller" && state.proposal === null);
+        if (tripStillNegotiable) {
+          const resolvedDates: Partial<Slots> = {};
+          if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
+          if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
+          state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
 
-        // The traveller said *something* about a date, but it wasn't
-        // specific enough to resolve to one calendar day (e.g. "un weekend
-        // di novembre") — worth telling them that, instead of silently
-        // re-asking the same generic question, which reads as "didn't hear
-        // you" when it actually did (regression: live user hit exactly this
-        // with vague month-only answers, repeated 3+ times). Persisted on
-        // the slots themselves (not a local variable) so it survives to a
-        // *later* turn when dateFrom next becomes the missing slot — a
-        // second regression found reading this code: the traveller can
-        // volunteer a vague date on a turn where city, not date, is what's
-        // being asked about, and that signal was being silently dropped.
-        if (typeof dateFromText === "string") {
-          state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
-          // A month hint ("in June") is worth keeping even once a vague
-          // phrase resolves to nothing else useful — matcher.ts uses it to
-          // bias which candidate gets picked and which date within it gets
-          // offered, instead of blindly defaulting to the earliest slot
-          // regardless of season (regression: "three days off in June" got
-          // offered a December date). Cleared once a real day resolves,
-          // same as dateFromVague.
-          state.slots.preferredMonth = resolvedDates.dateFrom ? null : extractMonthHint(dateFromText);
+          // The traveller said *something* about a date, but it wasn't
+          // specific enough to resolve to one calendar day (e.g. "un weekend
+          // di novembre") — worth telling them that, instead of silently
+          // re-asking the same generic question, which reads as "didn't hear
+          // you" when it actually did (regression: live user hit exactly this
+          // with vague month-only answers, repeated 3+ times). Persisted on
+          // the slots themselves (not a local variable) so it survives to a
+          // *later* turn when dateFrom next becomes the missing slot — a
+          // second regression found reading this code: the traveller can
+          // volunteer a vague date on a turn where city, not date, is what's
+          // being asked about, and that signal was being silently dropped.
+          if (typeof dateFromText === "string") {
+            state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+            // A month hint ("in June") is worth keeping even once a vague
+            // phrase resolves to nothing else useful — matcher.ts uses it to
+            // bias which candidate gets picked and which date within it gets
+            // offered, instead of blindly defaulting to the earliest slot
+            // regardless of season (regression: "three days off in June" got
+            // offered a December date). Cleared once a real day resolves,
+            // same as dateFromVague.
+            state.slots.preferredMonth = resolvedDates.dateFrom ? null : extractMonthHint(dateFromText);
+          }
         }
-      }
-      state.traveller = mergeDefined(state.traveller, sanitizeTravellerUpdates(interpretation.travellerUpdates));
+        state.traveller = mergeDefined(state.traveller, sanitizeTravellerUpdates(interpretation.travellerUpdates));
 
-      // Sticky once detected: respond in whatever language the traveller
-      // is actually using, not always Italian (regression: a fully
-      // English conversation kept getting Italian replies — see
-      // ARCHITECTURE.md, 2026-09-15).
-      if (interpretation.language) {
-        state.language = interpretation.language;
+        // Sticky once detected: respond in whatever language the traveller
+        // is actually using, not always Italian (regression: a fully
+        // English conversation kept getting Italian replies — see
+        // ARCHITECTURE.md, 2026-09-15).
+        if (interpretation.language) {
+          state.language = interpretation.language;
+        }
       }
 
       switch (state.stage) {
@@ -307,7 +341,7 @@ export class ConversationDO extends DurableObject<Env> {
           reply = await this.runCollecting(state);
           break;
         case "proposing":
-          reply = await this.runProposing(state, interpretation.decision, text);
+          reply = await this.runProposing(state, decisionFromInterpretation, text);
           break;
         case "collecting_traveller":
           reply = await this.runCollectingTraveller(state);
@@ -487,6 +521,81 @@ export class ConversationDO extends DurableObject<Env> {
     }
   }
 
+  /** Called only from a terminal stage ("booked", or "failed" once its own
+   * "riprova" paths have already been ruled out) — decides whether this
+   * new message is genuinely about a DIFFERENT trip, not just chatter
+   * ("grazie", "ok") or something unrelated. There's no "new conversation"
+   * button to send the traveller to instead (Giuseppe, 2026-09-15: this
+   * app is meant to run screen-free eventually — the web UI here is a
+   * 2026 testing facility, not the real interaction model — so a genuine
+   * human travel agent wouldn't have one either; the judgment call has to
+   * be made from the words alone, the same way it is here).
+   *
+   * Runs the SAME interpret() the main flow uses, but against a BLANK
+   * trip (EMPTY_SLOTS, not state.slots) so a stray leftover value from the
+   * trip that just finished can never leak into what's supposedly a fresh
+   * one. A real signal only: sport/city/a date phrase/budget — anything
+   * softer ("mah", "ciao") stays a false negative, correctly, since
+   * there's nothing concrete to resume it as.
+   *
+   * On a genuine signal: logs the just-finished trip into pastBookings
+   * (only when a real payment actually went through for it — nothing to
+   * log otherwise), resets every trip-only field, and returns true so
+   * handleMessage() falls through into the ordinary collecting flow below
+   * with THIS SAME interpretation already applied — never a second
+   * interpret() call for the one message. */
+  private async tryStartNewTripAfterTerminal(state: ConversationState, text: string): Promise<boolean> {
+    const interpretation = await interpret(this.env, EMPTY_SLOTS, state.traveller, text, null);
+    const { dateFromText, dateToText, ...slotUpdates } = interpretation.slotUpdates as Record<string, unknown>;
+    const hasNewTripSignal =
+      slotUpdates.sport != null || slotUpdates.city != null || typeof dateFromText === "string" || slotUpdates.budget != null || slotUpdates.budgetTier != null;
+    if (!hasNewTripSignal) return false;
+
+    // A real payment is a real physical commitment for those dates —
+    // worth remembering even though the DO's own trip fields are about to
+    // be wiped, so a LATER new-trip check in this same conversation can
+    // still warn about it (see pastBookings' own doc, types.ts). Skipped
+    // when nothing was ever actually paid for (a genuine unrecoverable
+    // failure) — there's no real-world conflict to warn about there.
+    if (state.paymentStatus === "succeeded" && state.slots.dateFrom) {
+      const dateFrom = state.slots.dateFrom;
+      const dateTo = state.slots.dateTo ?? addDaysIso(dateFrom, state.proposal?.candidate.durationDays ?? 1);
+      state.pastBookings.push({ reservationCode: state.reservationCode ?? state.itineraryId ?? "sconosciuto", dateFrom, dateTo });
+    }
+
+    state.slots = { ...EMPTY_SLOTS };
+    state.proposal = null;
+    state.rejectedProductIds = [];
+    state.itineraryId = null;
+    state.brand = null;
+    state.paymentIntentId = null;
+    state.paymentStatus = null;
+    state.totalPrice = null;
+    state.reservationCode = null;
+    state.failureReason = null;
+    state.cityAskAttempts = 0;
+    state.budgetAskAttempts = 0;
+    state.productDescription = null;
+    state.bookingRetryCount = 0;
+    state.followUpLogged = false;
+    state.lastDateOverlapWarning = null;
+    // Traveller data is already known (never re-asked) — go straight to
+    // the trip slots, same as a returning traveller with a saved profile.
+    state.stage = "collecting";
+
+    const resolvedDates: Partial<Slots> = {};
+    if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
+    if (typeof dateToText === "string") resolvedDates.dateTo = resolveDate(dateToText);
+    state.slots = mergeDefined(state.slots, { ...slotUpdates, ...resolvedDates } as Partial<Slots>);
+    if (typeof dateFromText === "string") {
+      state.slots.dateFromVague = resolvedDates.dateFrom ? null : dateFromText;
+      state.slots.preferredMonth = resolvedDates.dateFrom ? null : extractMonthHint(dateFromText);
+    }
+    state.traveller = mergeDefined(state.traveller, sanitizeTravellerUpdates(interpretation.travellerUpdates));
+    if (interpretation.language) state.language = interpretation.language;
+    return true;
+  }
+
   private async runCollecting(state: ConversationState): Promise<string> {
     // Walk the required slots in order and ask about the first one that
     // isn't gating-satisfied yet. Critically, a bypass on one slot (e.g. a
@@ -639,7 +748,27 @@ export class ConversationDO extends DurableObject<Env> {
     state.itineraryId = null;
     state.brand = null;
     state.totalPrice = null;
-    return this.say(state, { kind: "propose", ctx, precededBy, unavailableReason, adults: state.slots.adults! });
+
+    // A physical constraint, not a package mismatch — checked against
+    // EVERY trip this same traveller already paid for earlier in this
+    // conversation (see pastBookings' own doc, types.ts), not just the
+    // most recent one. Best-available estimate of THIS candidate's own
+    // dates at propose time, same fallback runProposing's "yes" branch
+    // commits to for real once confirmed (candidate.minDate when the
+    // traveller never gave an exact date).
+    const newDateFrom = state.slots.dateFrom ?? ctx.candidate.minDate;
+    const newDateTo = state.slots.dateTo ?? addDaysIso(newDateFrom, ctx.candidate.durationDays);
+    const overlapping = state.pastBookings.find((b) => datesOverlap(newDateFrom, newDateTo, b.dateFrom, b.dateTo));
+    state.lastDateOverlapWarning = overlapping ?? null;
+
+    return this.say(state, {
+      kind: "propose",
+      ctx,
+      precededBy,
+      unavailableReason,
+      adults: state.slots.adults!,
+      dateOverlapWarning: overlapping,
+    });
   }
 
   /** Ad-hoc informational question about the current proposal ("cosa

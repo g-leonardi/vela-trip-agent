@@ -266,6 +266,17 @@ export type SayDirective =
        * Framed as an ESTIMATE, never a confirmed number — the real cart,
        * opened only after confirmation, still re-verifies for real. */
       adults: number;
+      /** Set when this candidate's own dates genuinely intersect a booking
+       * the SAME traveller already confirmed earlier in this very
+       * conversation (see ConversationState.pastBookings, types.ts) — a
+       * real physical constraint (can't be in two places at once), unlike
+       * every other field on this directive which is about the PACKAGE
+       * itself. Deliberately just a disclosed heads-up, never a block:
+       * Giuseppe, 2026-09-15, "posso essere libero di fare altre
+       * prenotazioni" — only the DATES matter, never the destination (two
+       * genuinely different trips in non-overlapping weeks are fine, even
+       * to the same city). */
+      dateOverlapWarning?: { reservationCode: string; dateFrom: string; dateTo: string };
     }
   | {
       kind: "answer_proposal_question";
@@ -403,7 +414,15 @@ function directiveToInstruction(d: SayDirective): string {
         d.adults > 1
           ? ` Il prezzo indicato (${candidate.price}${currencySuffix}) è a persona/per l'occupazione base del pacchetto — per la vostra comitiva di ${d.adults} persone il totale STIMATO è ${candidate.price * d.adults}${currencySuffix} (te lo confermo per certo solo quando apro davvero la prenotazione). Menziona ENTRAMBI i numeri con naturalezza, non solo il prezzo a persona.`
           : "";
-      const base = `${lead}Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${currencySuffix}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.${priceNote}`;
+      // Non blocca MAI — è solo un avviso onesto, perché le date sono
+      // l'unico vincolo fisico reale (non puoi essere in due posti
+      // contemporaneamente), diversamente dalla città (due viaggi diversi
+      // in settimane diverse, anche nella stessa città, non sono un
+      // problema — Giuseppe, 2026-09-15).
+      const overlapNote = d.dateOverlapWarning
+        ? ` NOTA: questo nuovo viaggio si sovrappone (o è molto vicino) a un'altra tua prenotazione già confermata in questa stessa conversazione (codice ${d.dateOverlapWarning.reservationCode}, dal ${d.dateOverlapWarning.dateFrom} al ${d.dateOverlapWarning.dateTo}). Menzionalo con naturalezza come un semplice promemoria ("occhio, hai già un viaggio prenotato in quel periodo") — NON è vietato prenotare comunque, è solo un'informazione utile: chiedi se vuole procedere lo stesso.`
+        : "";
+      const base = `${lead}Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${currencySuffix}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.${priceNote}${overlapNote}`;
       if (category === "exact") return `${base} Corrisponde esattamente a quanto chiesto. Chiedi conferma per procedere.`;
       const c = compromise!;
       if (c.kind === "date_unspecified") {

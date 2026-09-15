@@ -44,6 +44,25 @@ function addDays(d: Date, days: number): Date {
   return copy;
 }
 
+/** `isoDate` (YYYY-MM-DD) plus `days` calendar days, as another ISO date —
+ * used to derive a confirmed booking's real end date from its start date
+ * and the product's own duration (candidate.durationDays), since a
+ * traveller's dateTo is optional and the actual reservation is defined by
+ * duration, not by whatever dateTo (if any) they happened to say. */
+export function addDaysIso(isoDate: string, days: number): string {
+  const [y, m, d] = isoDate.split("-").map(Number);
+  return toIso(addDays(new Date(Date.UTC(y!, m! - 1, d!)), days));
+}
+
+/** Inclusive interval overlap (touching counts) — "dal 1 al 10" conflicts
+ * with both "dal 1 al 3" and "dall'8 all'11" (Giuseppe, 2026-09-15: "le
+ * intersezioni contano"). Only ever used as a heads-up disclosure, never to
+ * block a booking — a traveller can be anywhere they like except two places
+ * at once, so only DATES matter here, never destination. */
+export function datesOverlap(aFrom: string, aTo: string, bFrom: string, bTo: string): boolean {
+  return aFrom <= bTo && bFrom <= aTo;
+}
+
 /** Deterministic IT/EN date resolver. Calendar arithmetic is exactly the
  * kind of thing an LLM gets subtly wrong (verified live: Workers AI
  * Llama-3.3-70B returned "1970"/"1971" as the year despite an explicit

@@ -1618,6 +1618,91 @@ budget mai indicato in conversazione, loop-breaker che scatta al
 secondo turno) e verifica sia `slots.budgetTier === "high"` sia il
 compromesso dichiarato. Typecheck pulito, 79 test passano.
 
+### Il vicolo cieco dopo una prenotazione: niente bottone, la conversazione continua da sola (sessionId `ab6d0bfa-...`, riguardata, 2026-09-15)
+
+Giuseppe, riguardando la STESSA sessione già investigata sopra: dopo
+una prenotazione confermata (pagata, in attesa solo della conferma
+tecnica interna — vedi la chiusura di Carlo più sopra), aveva scritto
+3 volte in quella stessa chat "voglio organizzare un viaggio a
+Lanzarote per il Padel dal 16 al 22 settembre" e ricevuto sempre lo
+stesso messaggio fisso ("il pagamento è andato a buon fine... dimmi
+'riprova'"). Verificato leggendo lo stato reale via `/api/state`, non
+per ipotesi.
+
+**Causa reale**: `handleMessage()` (`conversation.ts`), quando lo stage
+è `"booked"` o `"failed"`, rispondeva SEMPRE con un messaggio fisso che
+diceva letteralmente "apri una nuova conversazione se vuoi prenotare
+qualcos'altro" — ma il frontend (`public/index.html`) non offre alcun
+modo di farlo: il `sessionId` resta in `localStorage` per sempre,
+nessun bottone "nuova conversazione" esiste. Un vicolo cieco reale: il
+messaggio suggeriva un'azione che l'interfaccia non permette.
+
+**La soluzione discussa insieme, e perché non un bottone**: un bottone
+"nuova conversazione" avrebbe risolto il problema ma è la soluzione
+sbagliata per questo prodotto — Giuseppe: "la nostra app gira nel 2029
+senza schermo e la UI è una facility poiché siamo nel 2026". Un vero
+travel agent (umano, o vocale) non ha un tasto "nuova conversazione":
+capisce dal contesto quando gli si sta chiedendo qualcosa di nuovo. La
+soluzione doveva reggere anche senza schermo.
+
+**Implementazione** (`conversation.ts`): quando la conversazione è in
+uno stage terminale e arriva un nuovo messaggio, invece del messaggio
+fisso incondizionato, il messaggio viene passato a `interpret()` (la
+stessa chiamata NLU già usata ovunque nel resto del flusso) contro uno
+slot vuoto (`EMPTY_SLOTS`, mai `state.slots` — un valore residuo del
+viaggio appena concluso non deve mai infiltrarsi in uno che dovrebbe
+essere pulito). Due casi (`tryStartNewTripAfterTerminal`):
+- **Nessun segnale di viaggio reale** (sport/città/data/budget tutti
+  assenti — "grazie", "ok", "riprova") → comportamento di oggi
+  invariato: i percorsi di retry restano gli stessi, il messaggio fisso
+  resta lo stesso per la pura conversazione senza contenuto.
+- **Segnale di viaggio reale** → la conversazione "si riapre" nella
+  STESSA sessione: i campi del viaggio corrente (slot, proposta,
+  carrello, pagamento, contatore retry) vengono azzerati, i dati del
+  viaggiatore e gli hint del profilo restano intatti (mai richiesti di
+  nuovo), e l'interpretazione appena fatta viene applicata direttamente
+  — mai una seconda chiamata al modello per lo stesso messaggio
+  (`newTripJustStarted`, guardia esplicita sulla chiamata `interpret()`
+  del flusso principale).
+
+**Il controllo duplicati, e perché solo le date contano**: Giuseppe,
+sempre nella stessa conversazione: "è sufficiente che le date si
+accavallino. Non le città... non posso essere in due posti diversi
+allo stesso momento... le intersezioni contano! Devo essere libero in
+quelle date." Quindi il controllo (`searchAndPropose`, al momento della
+proposta, quando la nuova candidata ha finalmente una durata reale) è
+un'intersezione di INTERVALLI DI DATE, inclusiva (`datesOverlap`,
+`engine/dates.ts`: `aFrom <= bTo && bFrom <= aTo` — dal 1 al 10 confligge
+sia con dal 1 al 3 sia con dall'8 all'11), confrontata contro OGNI
+prenotazione già pagata in questa stessa conversazione
+(`state.pastBookings`, popolato solo se `paymentStatus === "succeeded"`
+— nulla da segnalare per un fallimento genuino senza pagamento), MAI
+contro la città. **Mai un blocco**: solo un avviso onesto in coda alla
+proposta (`propose.dateOverlapWarning`, `engine/ai.ts`) — "hai già una
+prenotazione confermata in quel periodo, vuoi procedere comunque?" — il
+viaggiatore resta libero di prenotare due viaggi diversi nella stessa
+settimana se proprio vuole (il sistema non ha modo di saperlo con
+certezza, e non è comunque suo compito impedirlo).
+
+**Scope dichiarato, non nascosto**: `pastBookings` vive nella singola
+Durable Object di questa conversazione, non tra sessioni/dispositivi
+diversi — esattamente lo stesso limite già documentato per
+`economicTierHint` ("a tendere avremo un db per le preferenze
+utente..."): un vero controllo cross-sessione (via email/userId)
+richiede quel database futuro, oggi non esiste.
+
+3 nuovi test in `test/conversation.test.ts`: chatter pura dopo
+"booked" non riapre nulla; un nuovo viaggio genuino dopo "booked" (e
+separatamente dopo "failed"/non verificato — il caso reale esatto)
+riparte nella stessa conversazione con dati del viaggiatore intatti e
+`pastBookings` popolato; date sovrapposte generano l'avviso ma non
+bloccano la prenotazione. Il test preesistente sul comportamento
+"booked" è stato aggiornato (usava testo libero non-DSL come sinonimo
+di "nessun contenuto nuovo" — ma nello STUB_MODE il fallback one-shot
+riempie sempre tutti gli slot per qualunque testo non-DSL, quindi ora
+serve "noop:1" per rappresentare davvero "niente di nuovo detto").
+Typecheck pulito, 82 test passano.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

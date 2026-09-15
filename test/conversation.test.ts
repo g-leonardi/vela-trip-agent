@@ -204,6 +204,24 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r.state.failureReason).toContain("BookingInitiated");
   });
 
+  it("a new trip typed after an unverified-but-confirmed booking ('failed' stage) is also picked up in place, not just from 'booked' — the exact real case (sessionId ab6d0bfa-..., 2026-09-15): 'riprova' still retries the stuck booking first, only a genuinely new trip resumes", async () => {
+    const stub = freshConversation();
+    await stub.handleMessage(`${tripDsl("|preferences:SCENARIO:never_confirms")}|${TRAVELLER_DSL}`);
+    const rFailed = await stub.handleMessage("decision:yes");
+    expect(rFailed.state.stage).toBe("failed");
+
+    // "riprova" (a real retry attempt) must NOT be swallowed by the new
+    // new-trip detection — it stays retryable, still "failed", nothing reset.
+    const rRetry = await stub.handleMessage("riprova");
+    expect(rRetry.state.stage).toBe("failed");
+    expect(rRetry.state.pastBookings).toHaveLength(0);
+
+    const r2 = await stub.handleMessage("sport:padel|destCity:Torino|dateFrom:10 dicembre 2026|budget:500|adults:1");
+    expect(r2.state.stage).toBe("proposing");
+    expect(r2.state.pastBookings).toHaveLength(1);
+    expect(r2.state.pastBookings[0]!.reservationCode).toBe(rFailed.state.reservationCode);
+  });
+
   it("never answering the budget question fills it from the profile's economicTier instead of silently assuming 'cheapest' (Giuseppe, 2026-09-15: 'un luxury... voglia sempre la soluzione più inclusiva'), and discloses it as a compromise", async () => {
     const stub = freshConversation();
     const profile: UserProfile = {
@@ -235,11 +253,51 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r2.state.budgetTierFromProfileDefault).toBe(false);
   });
 
-  it("a conversation already in the terminal 'booked' stage doesn't restart the flow on a new message", async () => {
+  it("a conversation already in the terminal 'booked' stage doesn't restart the flow on pure chatter with no real trip signal", async () => {
     const stub = freshConversation();
     await stub.handleMessage(`${tripDsl()}|${TRAVELLER_DSL}`);
     await stub.handleMessage("decision:yes");
-    const r = await stub.handleMessage("qualsiasi altra cosa");
+    const r = await stub.handleMessage("noop:1"); // valid DSL, no recognized keys — genuinely nothing new said
     expect(r.state.stage).toBe("booked");
+  });
+
+  it("a genuinely new trip request typed into an already-'booked' conversation is picked up in place — no 'apri una nuova conversazione' dead end (Giuseppe, 2026-09-15, sessionId ab6d0bfa-...: 'la nostra app gira nel 2029 senza schermo', there's no button to send the traveller to)", async () => {
+    const stub = freshConversation();
+    await stub.handleMessage(`${tripDsl()}|${TRAVELLER_DSL}`);
+    const rBooked = await stub.handleMessage("decision:yes");
+    expect(rBooked.state.reservationCode).toBeTruthy();
+    // A second, different trip — same traveller (never re-asked), no
+    // overlap with the first one's dates (25 settembre 2026, 3 giorni).
+    const r2 = await stub.handleMessage("sport:padel|destCity:Torino|dateFrom:10 dicembre 2026|budget:500|adults:1");
+    expect(r2.state.stage).toBe("proposing");
+    expect(r2.state.slots.city).toBe("Torino");
+    // The first trip's traveller data survived the reset untouched.
+    expect(r2.state.traveller.firstName).toBe("Mario");
+    // First booking correctly remembered for future overlap checks, even
+    // though its own trip fields were just wiped.
+    expect(r2.state.pastBookings).toHaveLength(1);
+    expect(r2.state.pastBookings[0]!.reservationCode).toBe(rBooked.state.reservationCode);
+    expect(r2.state.lastDateOverlapWarning).toBeNull(); // December doesn't overlap September
+
+    const r3 = await stub.handleMessage("decision:yes");
+    expect(r3.state.stage).toBe("booked");
+    expect(r3.state.pastBookings).toHaveLength(1); // still just the first — the just-booked one isn't logged until ANOTHER new trip starts
+  });
+
+  it("a new trip whose dates intersect an already-confirmed one in this same conversation gets a non-blocking heads-up, never a block (Giuseppe, 2026-09-15: 'le intersezioni contano... devo essere libero in quelle date' — DATES only, never destination)", async () => {
+    const stub = freshConversation();
+    await stub.handleMessage(`${tripDsl()}|${TRAVELLER_DSL}`); // sport:tennis|destCity:Roma|dateFrom:25 settembre 2026|budget:400|adults:1 — stub default duration below
+    await stub.handleMessage("decision:yes");
+    // Overlaps the first trip's window (stub product duration is a few
+    // days from 2026-09-25) — same city on purpose, to prove the check is
+    // about DATES only, never destination.
+    const r2 = await stub.handleMessage("sport:tennis|destCity:Roma|dateFrom:26 settembre 2026|budget:400|adults:1");
+    expect(r2.state.stage).toBe("proposing");
+    expect(r2.state.lastDateOverlapWarning).not.toBeNull();
+    expect(r2.state.lastDateOverlapWarning?.reservationCode).toBeTruthy();
+
+    // Never a block — the traveller can still confirm and book it anyway.
+    const r3 = await stub.handleMessage("decision:yes");
+    expect(r3.state.stage).toBe("booked");
   });
 });

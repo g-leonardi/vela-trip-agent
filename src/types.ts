@@ -338,6 +338,24 @@ export interface ConversationState {
    * FollowUpDO — set once so repeated retries don't log duplicate
    * entries for the same conversation. */
   followUpLogged: boolean;
+  /** Every trip this SAME traveller has actually paid for earlier in THIS
+   * conversation (see tryStartNewTripAfterTerminal, conversation.ts) —
+   * append-only, one entry per completed trip, never cleared. A lightweight
+   * stand-in, scoped to a single conversation, for the real cross-session
+   * user-history/profiling DB Giuseppe has flagged as future work ("a
+   * tendere avremo un db per le preferenze utente" — see
+   * economicTierHint's doc above); once that DB exists this becomes a
+   * query against it instead of an in-memory array. Used only to warn
+   * about an overlapping NEW trip's dates, never to block one — see
+   * SayDirective's "propose".dateOverlapWarning, engine/ai.ts. */
+  pastBookings: { reservationCode: string; dateFrom: string; dateTo: string }[];
+  /** Mirrors the same-turn `propose` directive's own `dateOverlapWarning`
+   * (see engine/ai.ts) onto state itself, purely so it's inspectable
+   * without depending on the stubbed reply text — STUB_MODE's say()
+   * collapses every directive to "[stub:propose]" (see Env.STUB_MODE's
+   * doc), so this is what test/conversation.test.ts actually asserts on.
+   * Null whenever the last proposal had no overlap. */
+  lastDateOverlapWarning: { reservationCode: string; dateFrom: string; dateTo: string } | null;
 }
 
 /** A durably logged real payment whose booking never got a confirmed

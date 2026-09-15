@@ -3,6 +3,33 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Vicolo cieco dopo una prenotazione: eliminato senza bottone, coerente con "app senza schermo" (2026-09-15)
+
+Stessa sessione `ab6d0bfa-...`, riguardata: dopo una prenotazione
+confermata, 3 messaggi per un nuovo viaggio diverso nella stessa chat
+ricevevano sempre lo stesso messaggio fisso ("dimmi riprova") che
+suggeriva di "aprire una nuova conversazione" — azione che il frontend
+non permette (nessun bottone, sessionId fisso in `localStorage`).
+
+Deciso insieme: niente bottone (Giuseppe: "l'app gira nel 2029 senza
+schermo, la UI è solo una facility 2026") — la soluzione doveva essere
+conversazionale. `handleMessage()` ora passa ogni messaggio in uno
+stage terminale a `interpret()` contro slot vuoti: se emerge un
+segnale di viaggio reale (sport/città/data/budget), la conversazione
+si riapre nella STESSA sessione (dati viaggiatore/hint intatti, mai
+richiesti di nuovo); altrimenti il comportamento di oggi (retry,
+messaggio fisso per la pura chiacchiera) resta invariato.
+
+Controllo duplicati: solo le DATE contano (Giuseppe: "non posso essere
+in due posti diversi allo stesso momento... le intersezioni contano"),
+mai la città — intersezione di intervalli inclusiva, confrontata
+contro ogni prenotazione già pagata in questa conversazione
+(`pastBookings`), mai un blocco, solo un avviso onesto in coda alla
+proposta. Cross-sessione/dispositivo resta fuori scope (serve il
+futuro db profilazione, stesso limite già noto per `economicTierHint`).
+
+3 nuovi test, 82 test passano. Dettaglio completo in `ARCHITECTURE.md`.
+
 ## Profilo non ri-richiesto (non è un bug, è `localStorage`) + il suo segnale di budget non arrivava alla selezione (questo sì, corretto) (2026-09-15)
 
 Giuseppe, riguardando `ab6d0bfa-...`: perché il profilo (sport/nucleo
