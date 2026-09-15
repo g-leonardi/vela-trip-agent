@@ -109,7 +109,7 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r2.state.proposal?.candidate.productId).toBe("9001"); // still the same package
   });
 
-  it("price_changed scenario: the real cart price differs from what search advertised, surfaced as a compromise before booking", async () => {
+  it("price_changed scenario: the real cart price differs from what search advertised, surfaced as a compromise before booking, and reconfirming REUSES the same cart instead of recreating it", async () => {
     const stub = freshConversation();
     await stub.handleMessage(`${tripDsl("|preferences:SCENARIO:price_changed")}|${TRAVELLER_DSL}`);
     const r1 = await stub.handleMessage("decision:yes");
@@ -119,9 +119,16 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     // only the PRICE was re-verified and found different, so a real
     // itineraryId already exists at this point, correctly.
     expect(r1.state.itineraryId).toBeTruthy();
+    const itineraryIdBeforeReconfirm = r1.state.itineraryId;
 
     const r2 = await stub.handleMessage("decision:yes");
     expect(r2.state.stage).toBe("booked");
+    // Regression check (real sessions `ab6d0bfa-...`, `60ff320a-...`):
+    // reconfirming a price/date compromise used to blindly call
+    // createItinerary AGAIN, opening a second, different cart — verify
+    // it's the SAME cart end to end, not a new one.
+    expect(r2.state.itineraryId).toBe(itineraryIdBeforeReconfirm);
+    expect(r2.state.reservationCode).toBe(itineraryIdBeforeReconfirm);
   });
 
   it("broken_product_config scenario (real case, Giuseppe 2026-09-15, productId 19 \"M3 Padel Week\"): a cart that genuinely opens but whose immediate re-read permanently 502s rejects the product with the real reason and clears the abandoned cart, instead of being misread as a transient 'system is slow' error", async () => {

@@ -3,6 +3,37 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Sessione reale `ab6d0bfa-...`: tre segnalazioni, tre esiti diversi (2026-09-15)
+
+**1. Dati chiesti "dopo" — bug reale trovato**: un compromesso di prezzo
+accettato triggerava un 400 su `putCustomer`/`putPax` che azzerava
+TUTTI i dati del viaggiatore, riproducendo l'esatta interruzione tardiva
+già corretta oggi, da un percorso diverso. Causa: `openRealCartAndAttemptPayment`
+ricreava sempre un nuovo carrello ad ogni rientro, anche quando uno
+già aperto e già riprezzato esisteva. Corretto: riuso del carrello +
+pulizia esplicita dei riferimenti stale in `searchAndPropose`. **Un
+bug nel fix stesso è stato trovato dal test dedicato** prima di
+arrivare in produzione (segnale `totalPrice` mai impostato nel ramo
+`price_changed`) — esattamente il valore della suite di test appena
+costruita.
+
+**2. Prodotto diverso da quello atteso — non un bug**: verificato che
+esistono davvero due prodotti distinti allo stesso venue (TocaHub
+Lanzarote) — il sistema ne ha scelto uno valido, non quello specifico
+che Giuseppe aveva in mente dal sito reale.
+
+**3. "Il sistema ci sta mettendo un po'" perenne — gap di coerenza
+trovato e corretto**: `searchAndPropose` catturava solo il nostro
+limite auto-imposto, non un vero errore retryable da HOFJ, che cadeva
+nel gestore generico invece del tono di backpressure onesto già usato
+altrove nello stesso metodo. Quota reale verificata NON esaurita
+(119/120) — la causa resta probabilmente un problema reale e
+transitorio lato HOFJ (trovato anche un problema DNS intermittente
+reale su hofj.com, servito da Google App Engine).
+
+78 test passano (incluso uno nuovo che verifica esplicitamente il
+riuso del carrello). Dettaglio completo in `ARCHITECTURE.md`.
+
 ## Tono positivo verso il viaggiatore per "unverified", conseguenza diretta della chiusura di Carlo (2026-09-15)
 
 Prima: "il sistema non mi dà conferma certa" — un'incertezza vera

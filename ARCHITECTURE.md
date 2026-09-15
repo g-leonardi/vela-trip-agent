@@ -1465,6 +1465,82 @@ Typecheck pulito, 78 test passano — aggiornato anche il test
 `never_confirms` esistente (si aspettava `reservationCode: null`, ora
 corregge correttamente ad aspettarsi il vero codice).
 
+### Sessione reale `ab6d0bfa-...`: tre segnalazioni di Giuseppe, tre esiti diversi (2026-09-15)
+
+Tre punti, verificati uno per uno con i dati reali dello stato della
+sessione (`/api/state`), non a intuito.
+
+**1. "Le informazioni su chi sono me le ha chieste dopo e non prima."**
+Verificato: il PRIMO messaggio dell'agente chiede già solo il cognome
+(nome/email/città già noti — un vero profilo salvato da test precedenti
+nello stesso browser, `householdSizeHint`/`economicTierHint`/
+`preferredSportHint` tutti popolati). L'ordine "dati prima" funziona
+correttamente al primo giro. **Il problema vero era altrove**: dopo un
+compromesso di prezzo accettato ("procedi"), `putCustomer`/`putPax`
+falliva con un 400, azzerando TUTTI i dati del viaggiatore e richiedendoli
+di nuovo da zero — proprio il pattern di interruzione tardiva che il
+riordino di oggi avrebbe dovuto eliminare, riemerso da un percorso
+diverso. Analizzando il codice: `openRealCartAndAttemptPayment` richiamava
+SEMPRE `createItinerary` da zero ogni volta che veniva rientrata — anche
+quando un carrello reale, già aperto e già riprezzato per la STESSA
+proposta, esisteva già (proprio il caso "riconferma dopo prezzo
+cambiato"). Due sessioni reali (`ab6d0bfa-...` e `60ff320a-...`) mostrano
+esattamente questo pattern. **Corretto**: nuova guardia che riusa il
+carrello esistente invece di ricrearlo, estratto il blocco
+`putCustomer`/`putPax` in un metodo dedicato riutilizzabile
+(`putTravellerDataAndAttemptPayment`), e `state.itineraryId`/`brand`/
+`totalPrice` ora vengono esplicitamente azzerati in `searchAndPropose`
+ogni volta che una proposta DAVVERO nuova sostituisce la precedente —
+così la loro presenza altrove significa sempre "stesso candidato, già
+aperto", mai un riferimento stale. **Un bug trovato dal test stesso,
+non dato per buono**: il primo tentativo di questo fix usava
+`state.totalPrice` come segnale "già verificato", ma quel campo non
+viene mai impostato nel ramo `price_changed` (si esce prima di
+raggiungere quella riga) — il test dedicato ha fallito immediatamente,
+rivelando il bug prima che arrivasse in produzione. Corretto impostando
+`totalPrice` anche nel ramo di compromesso di prezzo, dato che è
+comunque il prezzo reale già verificato.
+
+**2. "Mi aspettavo andassi a parare su Lanzarote Padel Getaway Week."**
+Verificato via ricerca diretta su staging, locale inglese: esistono
+DAVVERO due prodotti reali distinti allo stesso venue (TocaHub
+Lanzarote) — "Lanzarote Padel Getaway Week" (productId 125 in EN) e
+"Magnificent/Magnifico Padel in Lanzarote" (quello effettivamente
+proposto). **Non è un bug**: il sistema ha scelto in modo deterministico
+un'opzione reale e valida allo stesso venue, semplicemente diversa da
+quella specifica che Giuseppe aveva in mente dal sito reale. Coerente
+con la policy "mai una lista, una sola proposta alla volta" — senza un
+modo per il viaggiatore di specificare quale delle due preferisce
+(es. tramite `preferences`), la scelta tra due opzioni ugualmente valide
+resta deterministica ma non necessariamente quella attesa.
+
+**3. "Mi dice perennemente 'il sistema ci sta mettendo un po'.'"**
+Investigato lo stato reale della quota HOFJ (staging, una sola chiamata
+deliberata): 119/120 disponibili al momento del controllo — la quota
+NON era esaurita. Trovato però un gap reale leggendo il codice:
+`searchAndPropose` catturava SOLO `QuotaExhaustedError` (il nostro
+proprio limite auto-imposto) — un vero `HofjApiError` retryable
+(429/502/503) dal fornitore stesso, se capitava durante `search()`,
+cadeva invece nel gestore generico (`handleUnexpectedError`), che
+restituisce una frase fissa leggermente diversa dal tono di backpressure
+onesto già stabilito altrove in questo stesso metodo — non un vicolo
+cieco (la conversazione non si interrompe), ma un'incoerenza di tono.
+**Corretto**: stessa gestione di `QuotaExhaustedError`, stesso messaggio
+di backpressure onesto. **Nota d'onestà**: la causa più probabile del
+"perennemente" resta comunque un problema reale e transitorio lato HOFJ
+(gateway condiviso, inventario condiviso, già documentato più volte in
+questa sessione) — possibilmente aggravato dal volume di chiamate reali
+fatte oggi stesso durante le verifiche su più ambienti. Trovato anche,
+verificando questo, un problema DNS reale e intermittente su
+`staging.api.hofj.com`/`api.hofj.com` (serviti da Google App Engine,
+già annotato altrove in questo documento) — coerente con un'origine
+reale del ritardo percepito, non necessariamente solo un problema del
+nostro codice.
+
+Typecheck pulito, 78 test passano (incluso un nuovo test dedicato che
+verifica esplicitamente il riuso del carrello: stesso `itineraryId`
+prima e dopo la riconferma di un compromesso di prezzo).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

@@ -526,6 +526,20 @@ export class ConversationDO extends DurableObject<Env> {
       if (err instanceof QuotaExhaustedError) {
         return this.say(state, { kind: "backpressure", state: "queued" });
       }
+      // A real, retryable HOFJ error (429/502/503) — HofjClient already
+      // retried once internally and still failed. Regression found live
+      // 2026-09-15 (session `ab6d0bfa-...`, Giuseppe: "mi dice
+      // perennemente 'il sistema ci sta mettendo un po''"): this used to
+      // fall through uncaught to handleMessage's generic
+      // handleUnexpectedError, which DOES stay retry-friendly (doesn't
+      // fail the conversation) but with different, inconsistent wording
+      // from every other honest-backpressure case in this same method.
+      // Same framing here too — nothing committed yet, safe to just ask
+      // again.
+      if (err instanceof HofjApiError && err.retryable) {
+        console.error("search failed (retryable):", err.status, err.detail.slice(0, 200));
+        return this.say(state, { kind: "backpressure", state: "queued" });
+      }
       throw err;
     }
     let ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
@@ -574,6 +588,15 @@ export class ConversationDO extends DurableObject<Env> {
     // product now — never answer a question about THIS proposal using
     // stale detail fetched for a previous, possibly rejected one.
     state.productDescription = null;
+    // Same reasoning, for the real cart: any itineraryId/totalPrice on
+    // state belongs to whatever candidate was open BEFORE this new one —
+    // clearing them here is what makes openRealCartAndAttemptPayment's
+    // reuse-on-reconfirm guard safe (their presence there always means
+    // "this exact candidate", never a stale one from a rejected/
+    // superseded proposal).
+    state.itineraryId = null;
+    state.brand = null;
+    state.totalPrice = null;
     return this.say(state, { kind: "propose", ctx, precededBy, unavailableReason, adults: state.slots.adults! });
   }
 
@@ -694,6 +717,24 @@ export class ConversationDO extends DurableObject<Env> {
     // before itineraryId is ever set, so that path always starts clean.
     if (state.itineraryId && state.paymentIntentId) {
       return this.confirmBookingNow(state, "full");
+    }
+    // A real cart for THIS SAME proposal already exists and was already
+    // priced — e.g. reconfirming after a price_changed/date_shift_confirm
+    // compromise, which both return here to re-run this method on the
+    // traveller's next "yes". Reuse it instead of blindly recreating:
+    // recreating wastes a call and, per two real live sessions
+    // (`ab6d0bfa-...`, `60ff320a-...`), correlates with a putCustomer/
+    // putPax 400 on the fresh duplicate cart — forcing a full
+    // traveller-data reset right after the traveller already
+    // reconfirmed, reproducing the exact late-interruption pattern
+    // already fixed once this session (see the "collect traveller data
+    // up front" reorder, above). `state.itineraryId`/`totalPrice` are
+    // cleared in searchAndPropose whenever a genuinely NEW proposal
+    // replaces the old one, so their presence here reliably means "same
+    // candidate, already open" — never a stale reference to a rejected
+    // or superseded one.
+    if (state.itineraryId && state.totalPrice) {
+      return this.putTravellerDataAndAttemptPayment(state);
     }
 
     const proposal = state.proposal!;
@@ -862,6 +903,13 @@ export class ConversationDO extends DurableObject<Env> {
         compromise: { kind: "price", requested: `${estimatedTotal}€`, offered: `${livePrice}€` },
       };
       state.stage = "proposing";
+      // Set even though we're about to ask for reconfirmation, not
+      // book yet: this IS the real, live-verified price for the cart
+      // that's already open — recording it now (rather than only after
+      // the check passes) is what lets openRealCartAndAttemptPayment's
+      // reuse-on-reconfirm guard recognize this cart as already priced
+      // on the traveller's next "yes", instead of recreating it.
+      state.totalPrice = snapshot.data.totalPrice;
       return this.say(state, {
         kind: "price_changed",
         oldPrice: `${estimatedTotal}€`,
@@ -870,10 +918,24 @@ export class ConversationDO extends DurableObject<Env> {
     }
     state.totalPrice = snapshot.data.totalPrice;
 
+    return this.putTravellerDataAndAttemptPayment(state);
+  }
+
+  /** Submits the traveller's own data to an ALREADY-open, already-priced
+   * cart and attempts payment — split out from openRealCartAndAttemptPayment
+   * so it can be called both on the first pass (right after
+   * createItinerary/getItinerary succeed) and when re-entering with an
+   * existing cart already open (a price_changed/date_shift_confirm
+   * reconfirmation — see that method's own reuse guard). `state.proposal`/
+   * `state.itineraryId`/`state.brand`/`state.totalPrice` must already be
+   * set and consistent with each other before calling this. */
+  private async putTravellerDataAndAttemptPayment(state: ConversationState): Promise<string> {
+    const candidate = state.proposal!.candidate;
+    const brand = state.brand!;
     const traveller = state.traveller;
     try {
       await this.hofj.putCustomer(
-        state.itineraryId,
+        state.itineraryId!,
         {
           firstName: traveller.firstName!,
           lastName: traveller.lastName!,
@@ -903,7 +965,7 @@ export class ConversationDO extends DurableObject<Env> {
       const pax: PaxPayload[] = Array.from({ length: state.slots.adults! }, (_, i) =>
         i === 0 ? { refId: "pax-1", firstName: traveller.firstName!, lastName: traveller.lastName! } : { refId: `pax-${i + 1}` },
       );
-      await this.hofj.putPax(state.itineraryId, pax, brand);
+      await this.hofj.putPax(state.itineraryId!, pax, brand);
     } catch (err) {
       // Second line of defense behind sanitizeTravellerUpdates() above —
       // that check catches the one real case found live (a malformed
