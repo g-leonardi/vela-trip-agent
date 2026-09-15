@@ -7,6 +7,49 @@
 la prima volta 2026-09-14 ~14:30 (vedi commit history per i deploy
 successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
 
+## Riassunto esecutivo
+
+> Non nuove affermazioni — solo un indice diretto a quello che le oltre
+> 1300 righe sotto già dimostrano, sezione per sezione.
+
+1. **Prototipo funzionante (25%)** — sì, verificato dal vivo sull'URL
+   deployato (non solo in locale), oggi stesso: intento in linguaggio
+   naturale → proposta con prezzo reale → conferma → carrello reale su
+   HOFJ staging → pagamento Stripe test reale riuscito → tentativo di
+   booking. Il booking finale resta "confermato ma non verificabile" per
+   un limite noto e confermato dal fornitore stesso (Carlo, Vela/HOFJ),
+   non un nostro bug — vedi sezione 1 e sezione 5.
+2. **Architettura di scalabilità (25%)** — quota gate (token bucket) +
+   cache/coalescing sulla discovery, verificati con un load test k6 reale
+   da 50.000 viaggiatori simulati in 10 minuti: 99,5% delle ricerche mai
+   arrivate a consumare un token di quota, 142 prenotazioni reali
+   completate, zero errori 500 applicativi — numeri veri, comandi di
+   riproduzione esatti in cima alla sezione 2.
+3. **Vision — "sei uscito dal marketplace?" (20%)** — un agente
+   conversazionale vero, una proposta alla volta, mai una lista;
+   progettato esplicitamente per un futuro senza schermo (l'interfaccia
+   web di oggi è una facility di test 2026, non il modello
+   d'interazione reale) — rinforzato anche oggi, rifiutando un bottone
+   "nuova conversazione" in favore di una ripresa conversazionale — vedi
+   sezione 3.
+4. **Metodo agentico (15%)** — una sessione Claude Code continua e
+   pubblica, esplorazione reale dell'API via `curl`, debug dal vivo via
+   `wrangler tail`, autocorrezione onesta lasciata in chiaro (le sezioni
+   "CORREZIONE" sono intenzionali, non nascoste) e una suite di test
+   deterministica costruita apposta per validare la macchina a stati
+   senza mai toccare il budget AI reale — vedi sezione 4.
+5. **Padronanza API (10%)** — più bug reali upstream trovati e
+   diagnosticati con la causa isolata (mismatch di brand, pre-
+   provisioning dei pax, un campo scartato dal gateway a prescindere dal
+   valore, un giorno intero puntato all'ambiente sbagliato), mai
+   ipotizzati: sempre verificati con chiamate dirette all'API, bypassando
+   il nostro stesso Worker — vedi sezione 5.
+6. **Comunicazione (5%)** — questo documento (aggiornato durante il
+   lavoro, timestamp reali), `/agent-log/` (trascrizione grezza redatta
+   più volte, verificata prima di ogni commit), un `README.md` minimale,
+   e un video 3-5 min dell'acquisto reale end-to-end (in lavorazione) —
+   vedi sezione 6.
+
 ## 1. Prototipo funzionante (25%)
 - Flusso di booking reale che vogliamo far completare end-to-end:
   Intento in linguaggio naturale → slot-filling (sport, città, data,
@@ -106,6 +149,34 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     richiesta esplicita di Giuseppe.
 
 ## 2. Architettura di scalabilità (25%)
+
+> **Come riprodurre TUTTI e tre gli scenari di load test** (il brief
+> chiede esplicitamente "un load test che possiamo eseguire noi
+> stessi" — comandi esatti, non solo numeri):
+>
+> **1. `slot_filling_burst`** (100 VU di picco, mai chiama HOFJ) e
+> **2. `full_booking_search`** (3 VU / 10 iterazioni, chiama HOFJ
+> davvero — resta ben sotto la quota condivisa di 120/min) — entrambi
+> in `loadtest/booking-flow.js`, contro l'API reale:
+> ```bash
+> npm run dev                        # terminale 1 — wrangler dev, wrangler.jsonc, HOFJ reale
+> k6 run loadtest/booking-flow.js    # terminale 2 — BASE_URL default: http://localhost:8787
+> ```
+>
+> **3. `scale_50k`** — 50.000 conversazioni simulate in 10 minuti sotto
+> `STUB_MODE` (vedi sotto per cosa misura davvero, e perché mai contro
+> HOFJ/Stripe/Workers AI reali):
+> ```bash
+> npm run loadtest:dev                   # terminale 1 — wrangler dev --config wrangler.loadtest.jsonc, porta 8788
+> k6 run loadtest/scale-50k.js           # terminale 2 — BASE_URL default: http://localhost:8788
+> ```
+> Variabili d'ambiente per `scale-50k.js` (tutte opzionali, k6 `-e`):
+> `TRAVELLERS` (default `50000`), `WINDOW_SECONDS` (default `600`),
+> `BASE_URL` (default `http://localhost:8788`). Per una prova rapida
+> invece della piena scala:
+> ```bash
+> k6 run -e TRAVELLERS=500 -e WINDOW_SECONDS=60 loadtest/scale-50k.js
+> ```
 
 - **Load test: strumento e scenario** (`loadtest/booking-flow.js`, k6,
   eseguito dal vivo contro l'URL live 2026-09-14 ~14:35). Deliberatamente
