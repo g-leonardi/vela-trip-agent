@@ -483,8 +483,11 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
       // a B2B key, a known, acknowledged product limitation, not a real
       // unknown outcome. NEVER phrase this as an error or as doubt about
       // whether it worked — it did. Frame it as "confirmed on our side,
-      // pending final confirmation from the system" instead.
-      return `La prenotazione risulta effettuata: il pagamento di ${d.totalPrice} è andato a buon fine, e il codice di riferimento è ${d.itineraryId}. Comunicalo con SICUREZZA, non come un dubbio — dì che è in attesa dell'ultima conferma tecnica dal sistema del fornitore (un limite noto del loro lato, non un problema della prenotazione stessa), e che hai già i suoi dati salvati per seguirla. Tono positivo e rassicurante, MAI parole come "errore", "problema" o "non sono sicuro" — non lo è. Una frase, chiara e calda.`;
+      // pending final confirmation from the system" instead. The
+      // confirmation email is real too — Giuseppe confirmed one actually
+      // arrived for a booking made in this exact state during this
+      // session, not an assumed/invented claim about HOFJ's behavior.
+      return `La prenotazione risulta effettuata: il pagamento di ${d.totalPrice} è andato a buon fine, il codice di riferimento è ${d.itineraryId}, e arriverà anche una mail di conferma con tutti i dettagli. Comunicalo con SICUREZZA, non come un dubbio — dì che è in attesa solo dell'ultima conferma tecnica interna dal sistema del fornitore (un limite noto del loro lato, non un problema della prenotazione stessa). Tono positivo e rassicurante, MAI parole come "errore", "problema" o "non sono sicuro" — non lo è. Una frase, chiara e calda.`;
     case "booked":
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
     case "no_match": {

@@ -18,11 +18,11 @@ originale — non tutto ciò che inizia con "bookings:" è lo stesso caso.
 invariato — la conferma di Carlo non ci dà modo di verificare
 autonomamente prenotazioni future.
 
-**Lasciato deliberatamente fuori**: la promessa di un'email automatica
-("riceverai una mail con i dettagli") — un fatto su un sistema esterno
-che non ho verificato, in attesa di conferma da Giuseppe prima di
-aggiungerlo. 78 test passano (aggiornato anche `never_confirms`).
-Dettaglio in `ARCHITECTURE.md`.
+**Aggiornamento stesso giorno**: Giuseppe conferma — la mail è arrivata
+davvero, per una prenotazione reale fatta in questo stato durante la
+sessione. Aggiunta la riga "arriverà anche una mail di conferma" al
+messaggio (sia lato AI sia nel gemello deterministico). 78 test passano
+(aggiornato anche `never_confirms`). Dettaglio in `ARCHITECTURE.md`.
 
 ## CHIUSO: Carlo conferma che le prenotazioni sono davvero confermate (2026-09-15)
 

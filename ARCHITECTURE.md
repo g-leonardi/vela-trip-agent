@@ -1452,13 +1452,14 @@ backoffice, non un modo per verificare autonomamente ogni prenotazione
 futura, quindi tracciarle per un controllo umano resta la cosa giusta da
 fare.
 
-**Un punto lasciato esplicitamente aperto, non deciso da soli**: la
-frase proposta da Giuseppe includeva "riceverai una mail con tutti i
-dettagli" — una promessa specifica su un invio automatico di HOFJ/Vela
-che non abbiamo verificato. Non inclusa nel messaggio per lo stesso
-motivo per cui non si inventa mai un `price_changed.reason`: non
-prometter al viaggiatore qualcosa che potremmo non mantenere. In attesa
-di conferma da Giuseppe prima di aggiungerla.
+**Aggiornamento, stesso giorno**: Giuseppe conferma — la mail è
+arrivata per davvero, per una prenotazione fatta in questo stesso stato
+durante questa sessione. Non più un fatto da verificare: aggiunta la
+riga "arriverà anche una mail di conferma con tutti i dettagli" sia
+nella direttiva AI (`engine/ai.ts`) sia nel messaggio deterministico
+gemello per il caso "riprovato più volte" (`conversation.ts`) — stessa
+disciplina di prima, solo che ora il fatto è verificato invece che
+supposto.
 
 Typecheck pulito, 78 test passano — aggiornato anche il test
 `never_confirms` esistente (si aspettava `reservationCode: null`, ora
