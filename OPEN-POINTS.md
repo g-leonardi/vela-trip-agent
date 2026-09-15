@@ -3,6 +3,23 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Cambio pacchetto: motivazione reale + selezione più intelligente per budget (2026-09-15)
+
+Due follow-up di Giuseppe sulla sezione sopra. **(1)** Quando il
+pacchetto cambia davvero (originale non prenotabile), ora il messaggio
+porta anche il motivo VERO (`err.detail` di HOFJ, già catturato per i
+log ma mai mostrato al viaggiatore), non solo un generico "problema del
+fornitore" — stessa onestà già usata per `price_changed`: mai un motivo
+inventato quando non ne abbiamo uno reale. **(2)** Trovato leggendo il
+codice (non un bug segnalato dal vivo): con un budget numerico dato,
+`classify()` sceglieva sempre `pool[0]` (il primo per rilevanza API)
+SENZA MAI guardare il prezzo prima — il budget veniva controllato solo
+dopo, solo per etichettare il risultato come compromesso. Corretto:
+preferisce ora il miglior candidato TRA quelli che rientrano davvero nel
+budget (rilevanza API come criterio tra quelli che rientrano, nessun
+punteggio inventato), overage minimo solo se nessuno rientra. 3 nuovi
+test, nessuno rotto. Dettaglio in `ARCHITECTURE.md`.
+
 ## Fluidità della conversazione: 3 fix da una sessione reale sul deploy (`60ff320a-...`, 2026-09-15)
 
 1. **Bug data confermato e corretto**: "il periodo **del** 16 al 22

@@ -194,6 +194,16 @@ export type SayDirective =
       kind: "propose";
       ctx: ProposalContext;
       precededBy?: "rejected" | "unavailable";
+      /** The real, verified upstream detail when `precededBy ===
+       * "unavailable"` and we actually have one (see HofjApiError.detail,
+       * openRealCartAndAttemptPayment in conversation.ts) — never a
+       * fabricated cause. Same honesty discipline as `price_changed`'s
+       * own `reason` field: state it, translated into plain terms, when
+       * we truly have it; explicitly told not to invent one when we
+       * don't (Giuseppe, 2026-09-15: switching to a different package
+       * must come with real evidence AND a real reason, not a vague
+       * "problema del fornitore" every time). */
+      unavailableReason?: string;
       /** Real party size, already known before any proposal is ever made
        * (adults is never asked-then-bypassed — see the precision policy,
        * ARCHITECTURE.md). Used to surface an upfront estimated total for
@@ -271,7 +281,7 @@ export type SayDirective =
   | { kind: "booking_forbidden" }
   | { kind: "booking_unverified" }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
-  | { kind: "no_match"; precededBy?: "rejected" | "unavailable" };
+  | { kind: "no_match"; precededBy?: "rejected" | "unavailable"; unavailableReason?: string };
 
 function buildSaySystem(language: string | null): string {
   return `Sei la voce di un agente di prenotazione viaggi sportivi (padel/tennis + hotel), pensato per essere ascoltato più che letto: l'interazione è vocale, il viaggiatore potrebbe non guardare uno schermo. Parla in modo naturale, caldo, diretto, come faresti al telefono.
@@ -306,7 +316,9 @@ function directiveToInstruction(d: SayDirective): string {
         d.precededBy === "rejected"
           ? "Il viaggiatore ha rifiutato la proposta precedente. Riconoscilo con una parola o due (non una frase intera a sé) e poi, nello stesso messaggio, "
           : d.precededBy === "unavailable"
-            ? "Il pacchetto proposto prima non risulta più prenotabile per davvero (un problema del fornitore, non tuo). Diglielo in breve e poi, nello stesso messaggio, "
+            ? d.unavailableReason
+              ? `Il pacchetto proposto prima non risulta più prenotabile per davvero. Il fornitore segnala questo motivo tecnico, verificato: "${d.unavailableReason}" — traducilo in termini comprensibili per un viaggiatore (mai il gergo tecnico letterale), poi, nello stesso messaggio, `
+              : "Il pacchetto proposto prima non risulta più prenotabile per davvero (un problema del fornitore — il motivo esatto non è disponibile, quindi NON inventarne uno plausibile). Diglielo con onestà in breve e poi, nello stesso messaggio, "
             : "";
       // Verified live 2026-09-15 (Giuseppe, dopo aver notato il prezzo
       // che raddoppiava): search() non manda mai `adults`, quindi
@@ -413,7 +425,9 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
         d.precededBy === "rejected"
           ? "Il viaggiatore ha appena rifiutato la proposta precedente. Riconoscilo in una parola o due, poi, nello stesso messaggio, "
           : d.precededBy === "unavailable"
-            ? "Il pacchetto che il viaggiatore aveva appena confermato non è risultato prenotabile per davvero (un problema del fornitore, non suo), e non c'è più nulla di equivalente da proporre al suo posto. Diglielo con onestà in breve, poi, nello stesso messaggio, "
+            ? d.unavailableReason
+              ? `Il pacchetto che il viaggiatore aveva appena confermato non è risultato prenotabile per davvero, e non c'è più nulla di equivalente da proporre al suo posto. Il fornitore segnala questo motivo tecnico, verificato: "${d.unavailableReason}" — traducilo in termini comprensibili (mai il gergo tecnico letterale). Poi, nello stesso messaggio, `
+              : "Il pacchetto che il viaggiatore aveva appena confermato non è risultato prenotabile per davvero (un problema del fornitore — il motivo esatto non è disponibile, quindi NON inventarne uno), e non c'è più nulla di equivalente da proporre al suo posto. Diglielo con onestà in breve, poi, nello stesso messaggio, "
             : "";
       return `${lead}Non hai trovato nulla che corrisponda in modo ragionevole a quanto chiesto finora (troppo lontano da budget o date disponibili). Non proporre nulla di debole: fai una domanda di chiarimento per allargare la ricerca (es. altra città, budget più alto, date più flessibili).`;
     }

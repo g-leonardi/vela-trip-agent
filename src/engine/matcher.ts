@@ -94,6 +94,24 @@ function shortlistByCity<T extends SearchProduct>(pool: T[]): T[] {
   return [...byCity.values()];
 }
 
+/** When a numeric budget was given, picking pool[0] (the API's own
+ * relevance ranking) regardless of price meant the budget only ever got
+ * checked AFTER the pick, just to decide whether to call it a
+ * compromise — never used to actually influence WHICH candidate got
+ * proposed (found reading the code after Giuseppe asked how selection
+ * works, 2026-09-15 — not a live bug report, a real gap all the same).
+ * Prefer the best-ranked candidate that genuinely fits the stated
+ * budget — still respecting the API's own relevance order as the
+ * tiebreaker among those that do, not a second invented score — and
+ * fall back to the smallest possible overage only when nothing in the
+ * pool fits at all, so an unavoidable compromise is the smallest one
+ * available instead of whatever happened to rank first overall. */
+function selectForNumericBudget(pool: BrandedProduct[], budget: number): BrandedProduct {
+  const withinBudget = pool.find((c) => c.price <= budget);
+  if (withinBudget) return withinBudget;
+  return pool.reduce((min, c) => (c.price < min.price ? c : min), pool[0]!);
+}
+
 /** Deterministic, auditable match classification — no invented numeric
  * scores. Business logic lives here so it can be unit-tested without the
  * AI binding; the AI's job is only to phrase the result (see engine/ai.ts).
@@ -146,7 +164,9 @@ export function classify(
     ? pool.reduce((min, c) => (c.price < min.price ? c : min), pool[0]!)
     : wantsMid
       ? [...pool].sort((a, b) => a.price - b.price)[Math.floor(pool.length / 2)]!
-      : pool[0]!;
+      : slots.budget !== null
+        ? selectForNumericBudget(pool, slots.budget)
+        : pool[0]!;
   const candidate = toCandidate(best);
 
   let category: ConfidenceCategory = "exact";

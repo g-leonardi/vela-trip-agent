@@ -51,6 +51,32 @@ describe("classify", () => {
     expect(result).toBeNull();
   });
 
+  it("with a numeric budget, prefers a lower-ranked candidate that actually fits over the top-ranked one that doesn't (regression: selection used to always take pool[0] regardless of price, checking budget only after picking)", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const tooExpensiveButTopRanked = product({ productId: 1, price: 600 });
+    const fitsButRankedLower = product({ productId: 2, price: 380 });
+    const result = classify(slots, [tooExpensiveButTopRanked, fitsButRankedLower], [], true);
+    expect(result?.candidate.productId).toBe("2");
+    expect(result?.category).toBe("exact");
+  });
+
+  it("with a numeric budget, still respects the API's own relevance ranking among candidates that all fit", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const topRankedAndFits = product({ productId: 1, price: 350 });
+    const alsoFitsButRankedLower = product({ productId: 2, price: 300 });
+    const result = classify(slots, [topRankedAndFits, alsoFitsButRankedLower], [], true);
+    expect(result?.candidate.productId).toBe("1");
+  });
+
+  it("with a numeric budget, falls back to the smallest overage when nothing in the pool fits", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const topRankedBigOverage = product({ productId: 1, price: 600 });
+    const smallerOverage = product({ productId: 2, price: 450 });
+    const result = classify(slots, [topRankedBigOverage, smallerOverage], [], true);
+    expect(result?.candidate.productId).toBe("2");
+    expect(result?.compromise?.offered).toBe("450€");
+  });
+
   it("classifies as compromise when the requested date is outside the product window but close", () => {
     const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-08-20" }; // 12 days before minDate
     const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);

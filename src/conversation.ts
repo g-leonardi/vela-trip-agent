@@ -500,6 +500,10 @@ export class ConversationDO extends DurableObject<Env> {
   private async searchAndPropose(
     state: ConversationState,
     precededBy?: "rejected" | "unavailable",
+    /** Real, verified upstream detail behind `precededBy === "unavailable"`
+     * (see HofjApiError.detail, openRealCartAndAttemptPayment) — never
+     * fabricated when absent, see SayDirective's own doc, engine/ai.ts. */
+    unavailableReason?: string,
   ): Promise<string> {
     // search() is priority P3 (discovery) — cached/coalesced first (see
     // engine/matcher.ts, hofj/discoveryCache.ts), consulting the quota
@@ -519,7 +523,7 @@ export class ConversationDO extends DurableObject<Env> {
     const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
       state.stage = "collecting";
-      return this.say(state, { kind: "no_match", precededBy });
+      return this.say(state, { kind: "no_match", precededBy, unavailableReason });
     }
     state.cityAskAttempts = 0;
     state.budgetAskAttempts = 0;
@@ -529,7 +533,7 @@ export class ConversationDO extends DurableObject<Env> {
     // product now — never answer a question about THIS proposal using
     // stale detail fetched for a previous, possibly rejected one.
     state.productDescription = null;
-    return this.say(state, { kind: "propose", ctx, precededBy, adults: state.slots.adults! });
+    return this.say(state, { kind: "propose", ctx, precededBy, unavailableReason, adults: state.slots.adults! });
   }
 
   /** Ad-hoc informational question about the current proposal ("cosa
@@ -746,7 +750,16 @@ export class ConversationDO extends DurableObject<Env> {
         state.rejectedProductIds.push(candidate.productId);
         state.proposal = null;
         state.stage = "collecting";
-        return this.searchAndPropose(state, "unavailable");
+        // The real upstream detail, when we have one — same truncation
+        // convention as the console.error calls elsewhere in this
+        // function — so the traveller-facing message can state an
+        // actual verified reason instead of always the generic
+        // "problema del fornitore" (Giuseppe, 2026-09-15: a real package
+        // switch needs a real reason, not just evidence that it
+        // happened). Sometimes this IS a generic gateway string
+        // ("error code: 502" — see this branch's own doc above); passing
+        // it through anyway stays honest either way, never invented.
+        return this.searchAndPropose(state, "unavailable", err.detail.slice(0, 200));
       }
       throw err;
     }

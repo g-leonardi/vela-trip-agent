@@ -1033,6 +1033,66 @@ profilazione più ricco — non costruito in questa fase, notato qui
 esplicitamente perché non sia scambiato per una dimenticanza quando si
 guarderà indietro a questo prototipo.
 
+### Due domande di Giuseppe sul cambio pacchetto: motivazione reale, e come sceglie l'engine (2026-09-15)
+
+Seguito diretto della sezione precedente. Giuseppe ha confermato che un
+cambio pacchetto è chiaramente possibile (il caso "originale davvero non
+prenotabile" in `openRealCartAndAttemptPayment`), ma ha chiesto due cose:
+dare al viaggiatore anche il MOTIVO per cui cambia, non solo la
+segnalazione che è cambiato; e capire come l'engine sceglie quale
+candidato proporre tra quelli trovati, chiedendosi se si può rendere più
+intelligente.
+
+**1. Motivazione reale, non più solo "un problema del fornitore".**
+Verificato leggendo il codice: quando `createItinerary` fallisce anche
+sulla `minDate` nota-buona del prodotto (il caso genuinamente "non
+prenotabile", non il fallback data), `err.detail` — il messaggio reale
+di HOFJ, già catturato per il logging interno — non veniva mai passato
+al messaggio per il viaggiatore, sempre sostituito da un generico
+"problema del fornitore, non tuo". Corretto: nuovo campo opzionale
+`unavailableReason` sulle direttive `propose`/`no_match`
+(`engine/ai.ts`), valorizzato con `err.detail.slice(0, 200)` (stessa
+convenzione di troncamento già usata per i log). Stessa disciplina di
+onestà già stabilita per `price_changed`: se abbiamo un motivo reale, il
+modello lo traduce in termini comprensibili (mai il gergo tecnico
+letterale); se non lo abbiamo (o è un generico "error code: 502" del
+gateway — capita, documentato altrove nello stesso file), il modello
+resta onesto SENZA inventarne uno plausibile. Il caso "originale ancora
+disponibile, solo la data cambia" (la sezione precedente, `date_shift_confirm`)
+resta distinto e non necessita motivazione aggiuntiva: lì non cambia il
+pacchetto, solo la data.
+
+**2. Come sceglie oggi l'engine, e un gap reale trovato guardandolo.**
+`classify()` (`engine/matcher.ts`) sceglie così: se il viaggiatore non
+ha mai dato un budget (o ha detto "economico") prende il più economico
+del pool; se ha detto "carino ma non troppo caro" prende il prezzo
+mediano; **se ha dato un budget numerico preciso — il caso più comune —
+prendeva semplicemente `pool[0]`, il primo risultato per rilevanza
+dell'API, senza mai guardare il prezzo prima di scegliere**. Il budget
+veniva controllato solo DOPO la scelta, solo per decidere se etichettare
+il risultato come "compromise". Risultato pratico: se il primo risultato
+per rilevanza costava più del budget ma un'alternativa più in basso in
+lista rientrava perfettamente, il sistema proponeva comunque il primo,
+generando un compromesso evitabile.
+
+**Corretto** con `selectForNumericBudget()`: quando c'è un budget
+numerico, si preferisce il candidato meglio classificato tra quelli che
+rientrano DAVVERO nel budget (il ranking di rilevanza dell'API resta il
+criterio di scelta TRA quelli che rientrano — nessun punteggio numerico
+inventato, stessa disciplina di `classify()` in generale); solo se
+nessuno rientra si cade sul overage minimo possibile, invece che sul
+primo risultato qualunque sia il suo prezzo. Tre nuovi test in
+`matcher.test.ts` coprono: preferenza per un candidato che rientra anche
+se ranked più in basso; rispetto del ranking di rilevanza tra candidati
+che rientrano tutti; fallback all'overage minimo quando nessuno rientra.
+Nessun test esistente rotto (tutti i casi budget preesistenti usavano un
+solo candidato nel pool, comportamento identico).
+
+Typecheck e 64 test passano (61 + 3 nuovi sulla selezione). Non ancora
+verificato dal vivo con l'AI reale (stessa limitazione locale delle
+sezioni precedenti) — verificato per costruzione (typecheck, unit test
+mirati sulla logica deterministica, che è dove vive questa decisione).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
