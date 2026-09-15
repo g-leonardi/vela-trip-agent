@@ -113,20 +113,72 @@ Regole:
 - Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).
 - "language": il nome della lingua in cui il viaggiatore sta scrivendo ADESSO, in italiano (es. "italiano", "inglese", "spagnolo", "francese", "tedesco"...). Valorizzalo solo se il messaggio è abbastanza lungo/chiaro da capirlo con sicurezza, o se sembra diverso dalla lingua usata nei messaggi precedenti (cambio di lingua a metà conversazione) — altrimenti lascialo null, non serve ripeterlo ogni turno.`;
 
-/** See Env.STUB_MODE's doc, types.ts. Deterministic and text-independent
- * on purpose: the load test this feeds (loadtest/scale-50k.js) exists to
- * stress THIS Worker's own architecture (DO fan-out, the quota gate,
- * caching/coalescing) under 50k concurrent travellers, not to re-test NLU
- * — so the canned values are fixed and chosen to be internally consistent
- * with hofj/client.ts's own stub responses (same 250€/person price, same
- * 2 adults → 500€ total) precisely so the stubbed conversation reaches
- * "booked" in the minimum number of turns, without ever tripping the
- * (real, correct) price-changed/compromise logic that has nothing to do
- * with what this load test measures. Fills every still-missing field in
- * ONE response — both trip slots and traveller fields — rather than
- * one-per-turn, since a realistic per-turn UX pace isn't what's being
- * tested here either. */
-function stubInterpret(currentSlots: Slots, currentTraveller: TravellerInfo): RawInterpretation {
+/** Test-only DSL, parsed only under STUB_MODE (see Env.STUB_MODE's doc,
+ * types.ts): `chiave:valore|chiave:valore|...` — e.g.
+ * "sport:tennis|destCity:Roma|budget:300|adults:2" or "decision:no".
+ * Built 2026-09-15 (Giuseppe: "possiamo usare lo STUB_MODE... per
+ * scrivere i test [sulla] macchina a stati di conversation.ts") so
+ * test/conversation.test.ts can drive conversation.ts's state machine
+ * turn by turn, deterministically, without ever calling a real model —
+ * NLU accuracy itself is already covered separately (scripts/
+ * prompt-suite.mjs against real models). `destCity`/`homeCity` are
+ * deliberately distinct DSL keys (never just "city") so a test never
+ * has to replicate the real ambiguity currentlyAsking exists to resolve
+ * — this DSL sidesteps that problem entirely rather than testing it.
+ * Returns null when the text doesn't look like the DSL at all (doesn't
+ * start with "word:"), so ordinary free text falls through to the
+ * unchanged one-shot stub below. */
+function parseTestDsl(text: string): Record<string, string> | null {
+  const trimmed = text.trim();
+  if (!/^\w+:/.test(trimmed)) return null;
+  const out: Record<string, string> = {};
+  for (const part of trimmed.split("|")) {
+    const idx = part.indexOf(":");
+    if (idx === -1) continue;
+    out[part.slice(0, idx).trim()] = part.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+/** See Env.STUB_MODE's doc, types.ts. Two modes, both deterministic:
+ *
+ * 1. The test DSL (parseTestDsl above) when the traveller's text matches
+ *    it — full, precise, per-field control for
+ *    test/conversation.test.ts to exercise specific state-machine
+ *    branches turn by turn.
+ * 2. Otherwise (ordinary free text, e.g. loadtest/scale-50k.js's fixed
+ *    prompt strings, which this stub was originally built for and which
+ *    remain completely unchanged): the original one-shot fill, chosen
+ *    to be internally consistent with hofj/client.ts's own default stub
+ *    responses (same 250€/person price, same 2 adults → 500€ total) so
+ *    a stubbed load-test conversation reaches "booked" in the minimum
+ *    number of turns without ever tripping the (real, correct)
+ *    price-changed/compromise logic that load test isn't measuring. */
+function stubInterpret(currentSlots: Slots, currentTraveller: TravellerInfo, latestUserText: string): RawInterpretation {
+  const dsl = parseTestDsl(latestUserText);
+  if (dsl) {
+    return {
+      slotUpdates: {
+        sport: dsl.sport as Slots["sport"] | undefined,
+        city: dsl.destCity,
+        dateFromText: dsl.dateFrom,
+        dateToText: dsl.dateTo,
+        budget: dsl.budget !== undefined ? Number(dsl.budget) : undefined,
+        budgetTier: dsl.budgetTier as Slots["budgetTier"] | undefined,
+        adults: dsl.adults !== undefined ? Number(dsl.adults) : undefined,
+        preferences: dsl.preferences,
+      },
+      travellerUpdates: {
+        firstName: dsl.firstName,
+        lastName: dsl.lastName,
+        email: dsl.email,
+        phone: dsl.phone,
+        city: dsl.homeCity,
+      },
+      decision: (dsl.decision as RawInterpretation["decision"] | undefined) ?? "unclear",
+      language: dsl.language ?? null,
+    };
+  }
   return {
     slotUpdates: {
       sport: currentSlots.sport ?? "tennis",
@@ -154,7 +206,7 @@ export async function interpret(
   latestUserText: string,
   currentlyAsking: string | null = null,
 ): Promise<RawInterpretation> {
-  if (env.STUB_MODE === "1") return stubInterpret(currentSlots, currentTraveller);
+  if (env.STUB_MODE === "1") return stubInterpret(currentSlots, currentTraveller, latestUserText);
   // "city" exists on both slots (trip destination) and traveller (billing
   // address) — without knowing which question was just asked, a bare
   // answer like "Milano" is genuinely ambiguous. Verified live: this

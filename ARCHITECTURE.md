@@ -1144,6 +1144,101 @@ sopra, solo validazione dal vivo) — verificata per costruzione
 (typecheck pulito, riusa `searchCandidates`/`classify`, entrambe già
 ben coperte da test).
 
+### Test deterministici su conversation.ts/la macchina a stati, riusando STUB_MODE (2026-09-15)
+
+Giuseppe, prima del prossimo deploy: "la macchina a stati sta crescendo
+— riusciamo a costruire una suite di test deterministica per
+conversation.ts, usando STUB_MODE come per il load test?" — risposta:
+sì, e ora esiste (`test/conversation.test.ts`, 10 test, integrazione
+reale contro la vera `ConversationDO`, non un mock). Chiudeva anche il
+gap esplicitamente accettato sopra ("nessun test diretto su
+conversation.ts... solo validazione dal vivo").
+
+**Perché non bastava STUB_MODE così com'era**: per il load test, lo stub
+di `interpret()` ignora il testo e riempie sempre tutto in un colpo solo
+("sì" a tutto), e lo stub HOFJ ha un solo percorso — sempre successo,
+un solo prodotto fisso. Ottimo per misurare throughput sotto carico, ma
+inutile per testare la macchina a stati: nessun controllo su QUALE
+ramo si attraversa, e i rami più delicati (quelli con più bug storici in
+questa sessione) sono esattamente compromessi ed errori, mai raggiunti.
+
+**Due estensioni, entrambe attive SOLO sotto `STUB_MODE`, zero rischio
+per la produzione**:
+
+1. **Un DSL di test deterministico per `interpret()`** (`engine/ai.ts`):
+   quando il testo del viaggiatore è nella forma
+   `chiave:valore|chiave:valore|...` (es.
+   `"sport:tennis|destCity:Roma|budget:400|decision:yes"`), viene
+   parsato esattamente così, dando ai test controllo preciso, campo per
+   campo, turno per turno. `destCity`/`homeCity` sono chiavi distinte
+   (mai solo "city") — il test non deve replicare l'ambiguità reale che
+   `currentlyAsking` esiste per risolvere, la aggira del tutto. **Se il
+   testo non è in quella forma, il comportamento originale (riempi tutto,
+   "sì" sempre) resta identico e invariato** — è così che
+   `loadtest/scale-50k.js` continua a funzionare senza alcuna modifica,
+   verificato con una corsa di controllo (0% errori, stesso schema di
+   prima).
+
+2. **Scenari di fallimento controllabili nello stub HOFJ**
+   (`hofj/client.ts`, `STUB_SCENARIOS`): un test attiva uno scenario
+   mettendo `SCENARIO:<nome>` dentro `preferences` (finisce nella
+   keyword di ricerca per costruzione, vedi `buildKeyword()`,
+   `engine/matcher.ts`). Cinque scenari, ciascuno un `productId`
+   riservato: `date_shift` (createItinerary fallisce finché non si
+   usa il minDate del prodotto — il ramo `date_shift_confirm`),
+   `price_changed` (il totale reale del carrello differisce da quanto
+   annunciato in ricerca), `unavailable` (createItinerary fallisce
+   SEMPRE, anche sul proprio minDate — il ramo "davvero non disponibile,
+   cerca un'alternativa" con motivazione reale), `customer_rejected`
+   (putCustomer risponde 400 una sola volta, poi accetta — il ramo di
+   reset e ri-raccolta dati), `never_confirms` (riproduce il bug REALE
+   ancora aperto con Carlo: `confirmBooking` risponde 200 ma
+   `checkout.status` non si sblocca mai).
+
+**Una scoperta reale fatta scrivendo gli scenari, non ipotizzata**: il
+primo tentativo di `customer_rejected` tracciava il "già fallito una
+volta" per `itineraryId` — ma `openRealCartAndAttemptPayment` richiama
+sempre `createItinerary` da zero ad ogni retry (comportamento
+preesistente, già accettato, vedi il commento del metodo), quindi ogni
+retry genera un `itineraryId` NUOVO che non ha ancora "consumato" il suo
+fallimento una tantum — un loop infinito nel primo tentativo di test.
+Corretto tracciando un semplice flag booleano per conversazione
+(un'istanza di `HofjClient` per `ConversationDO`), non per itineraryId.
+
+**Un'altra scoperta, questa volta sul comportamento REALE del sistema,
+non un bug**: testando manualmente lo scenario "unavailable" con una
+data diversa dal minDate del prodotto, il sistema tenta PRIMA il
+fallback sulla data (comportamento corretto e documentato: non può
+distinguere "problema di data" da "davvero non disponibile" senza
+prima riprovare sul minDate) — il test dello scenario "davvero non
+disponibile" isolato richiede quindi di impostare la data richiesta
+UGUALE al minDate del prodotto scenario fin dal primo turno, per
+bypassare il ramo intermedio.
+
+**Copertura attuale** (10 test): raccolta dati viaggiatore all'inizio
+quando mancanti; dati non richiesti di nuovo se già noti da profilo;
+percorso felice fino a booked; rifiuto di una proposta senza loop;
+tutti e 5 gli scenari sopra end-to-end; una conversazione "booked" non
+riparte su un nuovo messaggio. **Fuori scope, dichiarato**: backpressure
+del gate di quota sotto concorrenza reale (resta compito di
+`loadtest/scale-50k.js`), isolamento tra conversazioni diverse (implicito
+nel design — una Durable Object per conversazione — non ri-testato),
+accuratezza NLU reale (resta compito di `scripts/prompt-suite.mjs`
+contro modelli veri).
+
+Aggiornato anche `wrangler.test.jsonc` (bindings `FOLLOWUP`/
+`HOFJ_QUOTA_GATE`, `STUB_MODE: "1"`, una `STRIPE_SECRET_KEY` fittizia
+mai realmente usata) e `tsconfig.json` (i tipi di `cloudflare:test` non
+erano inclusi). Nota tecnica: `worker-configuration.d.ts` (generato da
+`wrangler types`) lascia i binding Durable Object non tipizzati
+(`DurableObjectNamespace` generico, non parametrizzato sulla classe) —
+il test fa un cast esplicito al vero `Env` del progetto (`src/types.ts`)
+invece di combattere con la generazione automatica dei tipi.
+
+Typecheck pulito, 76 test passano (66 + 10 nuovi). Nessuna regressione
+sul load test, verificato con una corsa di controllo (100 viaggiatori,
+30s, 0% errori HTTP, stesso schema di prima).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

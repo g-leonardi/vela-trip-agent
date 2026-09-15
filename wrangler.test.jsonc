@@ -1,11 +1,25 @@
 // Test-only wrangler config. Mirrors wrangler.jsonc but drops the AI
 // binding's "remote: true": these are unit tests for pure/mocked logic
-// (engine/matcher.ts, engine/dates.ts, hofj/client.ts) that never touch
+// (engine/matcher.ts, engine/dates.ts, hofj/client.ts) plus, since
+// 2026-09-15, real integration tests against the actual ConversationDO
+// state machine (see test/conversation.test.ts) — none of these touch
 // env.AI, and starting a remote proxy session on every test run is slow
 // and depends on network reachability we don't need here (observed
 // flaky DNS to api.cloudflare.com in this sandbox — unrelated to the app
 // code, see ARCHITECTURE.md). Keep this in sync with wrangler.jsonc for
 // any binding the tests actually need.
+//
+// STUB_MODE: "1" is what makes the conversation.test.ts suite possible
+// at all — it's the SAME mechanism built for loadtest/scale-50k.js
+// (Giuseppe, 2026-09-15: "possiamo usare lo STUB_MODE che abbiamo usato
+// per il load test per scrivere i test"), now also driving a
+// deterministic test DSL in engine/ai.ts's stubInterpret() and
+// controllable failure scenarios in hofj/client.ts's stubRequest() — see
+// both files' own docs for the exact protocol. FOLLOWUP and
+// HOFJ_QUOTA_GATE are bound because the real ConversationDO code path
+// touches both (logFollowUpIfNeeded, the P0/P2/P3 quota gating) even
+// under STUB_MODE — only the upstream HOFJ/Stripe/AI calls themselves
+// are faked, everything else is the real, unmodified code.
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "vela-trip-agent",
@@ -14,16 +28,25 @@
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [
-      { "name": "CONVERSATION", "class_name": "ConversationDO" }
+      { "name": "CONVERSATION", "class_name": "ConversationDO" },
+      { "name": "FOLLOWUP", "class_name": "FollowUpDO" },
+      { "name": "HOFJ_QUOTA_GATE", "class_name": "HofjQuotaGate" }
     ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] }
+    { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["FollowUpDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["HofjQuotaGate"] }
   ],
   "vars": {
     "HOFJ_BASE_URL": "https://api.hofj.test",
     "HOFJ_BRAND": "terrarossa.com",
     "HOFJ_LOCALE": "it",
-    "HOFJ_API_KEY": "test-key"
+    "HOFJ_API_KEY": "test-key",
+    "HOFJ_QUOTA_PER_MIN": "100",
+    "STUB_MODE": "1",
+    // Any non-empty value works — STUB_MODE short-circuits stripe/client.ts
+    // before this is ever actually used to call the real Stripe API.
+    "STRIPE_SECRET_KEY": "stub-not-used-in-tests"
   }
 }

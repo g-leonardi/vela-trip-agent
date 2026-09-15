@@ -3,6 +3,34 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Test deterministici su conversation.ts, riusando STUB_MODE del load test (2026-09-15)
+
+Richiesta di Giuseppe prima del prossimo deploy: la macchina a stati
+sta crescendo, serve una suite di test deterministica. Riusato
+`STUB_MODE` (stesso meccanismo del load test) con due estensioni,
+entrambe attive solo sotto stub, zero rischio produzione: **(1)** un DSL
+di test per `interpret()` (`chiave:valore|...`, es.
+`"sport:tennis|decision:yes"`) — se il testo non è in quella forma, il
+comportamento originale del load test resta identico, verificato con
+una corsa di controllo; **(2)** 5 scenari di fallimento controllabili
+nello stub HOFJ (`SCENARIO:<nome>` in `preferences`) che coprono
+date_shift, price_changed, unavailable (pacchetto davvero cambiato),
+customer_rejected (reset dati), never_confirms (il bug reale ancora
+aperto con Carlo). Nuovo file `test/conversation.test.ts`, 10 test,
+integrazione reale contro la vera Durable Object.
+
+**Due scoperte reali facendolo, non ipotizzate**: il tracciamento
+"fallito una volta" per `customer_rejected` andava fatto per
+conversazione, non per itineraryId (ogni retry ne crea uno nuovo,
+comportamento preesistente — altrimenti loop infinito nel primo test);
+e lo scenario "unavailable" richiede la data richiesta uguale al minDate
+del prodotto per isolare il ramo "davvero non disponibile" da quello
+"forse è solo un problema di data" (che il sistema tenta sempre prima,
+comportamento corretto già verificato in sessioni precedenti).
+
+Typecheck pulito, 76 test passano (66 + 10). Nessuna regressione sul
+load test. Dettaglio completo in `ARCHITECTURE.md`.
+
 ## Alternativa dal profilo quando non trova nulla + selezione su due dimensioni (2026-09-15)
 
 **(1)** Quando la ricerca non trova nulla per lo sport richiesto, ora si
