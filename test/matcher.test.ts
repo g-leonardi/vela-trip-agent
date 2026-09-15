@@ -77,6 +77,24 @@ describe("classify", () => {
     expect(result?.compromise?.offered).toBe("450€");
   });
 
+  it("among candidates that all fit budget, prefers one that ALSO already covers the requested date over one that would additionally need a date compromise (more sophisticated selection: minimize compromises across dimensions, not just budget)", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const topRankedButWrongDates = product({ productId: 1, price: 350, minDate: "2026-11-01", maxDate: "2026-12-01" });
+    const rankedLowerButCoversDate = product({ productId: 2, price: 350, minDate: "2026-09-01", maxDate: "2026-12-01" });
+    const result = classify(slots, [topRankedButWrongDates, rankedLowerButCoversDate], [], true);
+    expect(result?.candidate.productId).toBe("2");
+    expect(result?.category).toBe("exact");
+  });
+
+  it("does nothing (no-op) when only one real candidate exists — the date tiebreaker never fabricates a comparison out of a single result", () => {
+    const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-09-25" };
+    const onlyOption = product({ productId: 1, price: 350, minDate: "2026-11-01", maxDate: "2026-12-01" });
+    const result = classify(slots, [onlyOption], [], true);
+    expect(result?.candidate.productId).toBe("1");
+    expect(result?.category).toBe("compromise");
+    expect(result?.compromise?.kind).toBe("date");
+  });
+
   it("classifies as compromise when the requested date is outside the product window but close", () => {
     const slots: Slots = { ...baseSlots, budget: 400, dateFrom: "2026-08-20" }; // 12 days before minDate
     const result = classify(slots, [product({ minDate: "2026-09-01", maxDate: "2026-12-01" })], [], true);

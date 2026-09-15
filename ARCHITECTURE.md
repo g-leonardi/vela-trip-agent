@@ -1093,6 +1093,57 @@ verificato dal vivo con l'AI reale (stessa limitazione locale delle
 sezioni precedenti) — verificato per costruzione (typecheck, unit test
 mirati sulla logica deterministica, che è dove vive questa decisione).
 
+### Nessun risultato: proporre un'alternativa dal profilo, e selezione più sofisticata su una seconda dimensione (2026-09-15)
+
+Due follow-up ulteriori di Giuseppe sulla stessa area.
+
+**1. "Non ho trovato questo, però ho trovato quest'altro" — simulato
+usando il profilo, mai in modo silenzioso.** Prima, quando `classify()`
+non trovava nulla (pool vuoto dopo i filtri), l'unica risposta era una
+domanda di chiarimento generica ("allarga i criteri"). Aggiunto in
+`searchAndPropose` (`conversation.ts`): se non c'è nulla per lo sport
+richiesto E il profilo del viaggiatore indica un `preferredSportHint`
+diverso da quello chiesto (un segnale reale, mai una supposizione — vedi
+`householdSizeHint`/`economicTierHint`, stesso pattern), si ritenta la
+ricerca con quello sport, stessa città/data/budget. Se trova qualcosa,
+lo propone con un nuovo tipo di compromesso dedicato,
+`sport_substituted` (`types.ts`, `engine/ai.ts`), che dice esplicitamente
+"non ho trovato X, ma so che ami anche Y e ho trovato questo — ti
+interessa?" — mai presentato come se fosse quello richiesto. **Vincoli
+deliberati**: scatta UNA sola volta (mai su un retry dopo un "rifiutato"
+— altrimenti un "no" alla sostituzione potrebbe far scattare un loop di
+altre sostituzioni), e non modifica mai `state.slots.sport` — se il
+viaggiatore rifiuta, la ricerca successiva torna naturalmente allo sport
+originale (che sappiamo già vuoto) e cade sul messaggio di chiarimento
+normale, senza bisogno di logica esplicita in più per gestirlo.
+
+**2. Selezione più sofisticata, ma solo quando ci sono davvero più
+risultati tra cui scegliere** (esplicitamente richiesto da Giuseppe: mai
+quando il risultato è unico). Aggiunta in `classify()` una seconda
+dimensione di preferenza, oltre al budget: quando è stata data una data
+precisa, tra i candidati sopravvissuti si preferisce (per riordino, mai
+filtro duro — stesso pattern non distruttivo già usato per
+`preferredMonth`) quello la cui finestra di disponibilità copre GIÀ
+quella data, rispetto a uno che richiederebbe ANCHE un compromesso di
+data. Prima, la selezione ottimizzava solo il budget in isolamento — con
+più candidati tutti nel budget, poteva capitare di sceglierne uno che
+poi necessitava comunque di un compromesso sulla data, quando un altro
+altrettanto buono (o migliore) non ne aveva bisogno affatto. Nessun
+punteggio numerico inventato: resta un filtro booleano deterministico
+("la data richiesta rientra nella finestra?"), con il ranking di
+rilevanza dell'API come criterio finale tra i candidati che restano
+equivalenti — stessa disciplina di `selectForNumericBudget`. 2 nuovi
+test: uno conferma la preferenza per il candidato che copre la data
+anche se ranked più in basso, l'altro conferma che con un solo
+candidato reale non succede nulla (no-op, come richiesto esplicitamente).
+
+Typecheck e 66 test passano (64 + 2 nuovi). La sostituzione sport non ha
+un test dedicato (nessun test diretto esiste su `conversation.ts`/la
+Durable Object in questo progetto — scelta di scope già documentata
+sopra, solo validazione dal vivo) — verificata per costruzione
+(typecheck pulito, riusa `searchCandidates`/`classify`, entrambe già
+ben coperte da test).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

@@ -212,10 +212,18 @@ export interface ProposalContext {
    * novembre", or nothing about budget ever) rather than giving one that
    * didn't fit — different enough to phrase differently ("ti propongo il
    * primo slot libero"/"ti propongo il più economico" vs "non riesco a X,
-   * riesco a Y"). `requested` is empty for the "_unspecified" cases. */
+   * riesco a Y"). `requested` is empty for the "_unspecified" cases.
+   * "sport_substituted": nothing at all matched the sport the traveller
+   * asked for, so a search was retried against their OWN profile's
+   * preferredSportHint instead (see searchAndPropose, conversation.ts) —
+   * `requested` is the sport originally asked for, `offered` is the
+   * substituted one. Only ever a disclosed, confirmable suggestion, same
+   * precision policy as every other compromise — never applied silently,
+   * and never retried a second time if rejected (see
+   * ARCHITECTURE.md). */
   compromise:
     | {
-        kind: "price" | "date" | "date_unspecified" | "location_unspecified" | "budget_unspecified";
+        kind: "price" | "date" | "date_unspecified" | "location_unspecified" | "budget_unspecified" | "sport_substituted";
         requested: string;
         offered: string;
       }

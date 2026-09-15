@@ -3,6 +3,21 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Alternativa dal profilo quando non trova nulla + selezione su due dimensioni (2026-09-15)
+
+**(1)** Quando la ricerca non trova nulla per lo sport richiesto, ora si
+ritenta UNA volta con lo sport preferito del profilo del viaggiatore
+(`preferredSportHint`, mai una supposizione) — se trova qualcosa, lo
+propone chiaramente come sostituzione ("non ho trovato X, ma so che ami
+anche Y"), mai in modo silenzioso, mai un secondo tentativo se rifiutato
+(evita un loop). Nuovo compromesso `sport_substituted`. **(2)**
+`classify()` ora preferisce, tra più candidati che rientrano nel budget,
+quello che copre ANCHE la data richiesta senza bisogno di un compromesso
+ulteriore — prima ottimizzava solo il budget, ignorando che un altro
+candidato altrettanto buono magari non aveva bisogno di NESSUN
+compromesso. Come richiesto esplicitamente: non fa nulla quando il
+risultato è unico. 2 nuovi test. Dettaglio in `ARCHITECTURE.md`.
+
 ## Cambio pacchetto: motivazione reale + selezione più intelligente per budget (2026-09-15)
 
 Due follow-up di Giuseppe sulla sezione sopra. **(1)** Quando il

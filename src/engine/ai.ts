@@ -347,6 +347,9 @@ function directiveToInstruction(d: SayDirective): string {
       if (c.kind === "budget_unspecified") {
         return `${base} Il viaggiatore non ti ha mai detto un budget. Diglielo con naturalezza — non è un problema, hai scelto tu il pacchetto più economico tra quelli pertinenti, a ${c.offered} — e chiedi conferma o se preferisce dirti un budget preciso.`;
       }
+      if (c.kind === "sport_substituted") {
+        return `${base} IMPORTANTE: il viaggiatore aveva chiesto "${c.requested}", ma non hai trovato NULLA che corrisponda per quello sport in quella città/periodo — quindi hai provato con "${c.offered}", che sai dal suo profilo essere uno sport che ama comunque. Dillo con chiarezza e onestà (es. "non ho trovato nulla per il ${c.requested}, ma so che ti piace anche il ${c.offered} e ho trovato questo — ti interessa?"), MAI presentarlo come se fosse quello che aveva chiesto. Chiedi conferma esplicita, e lascia capire che puoi comunque continuare a cercare ${c.requested} altrove se preferisce.`;
+      }
       return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}${c.kind === "price" ? " (entrambe le cifre sono A PERSONA, come il suo budget dichiarato)" : ""}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
     }
     case "answer_proposal_question": {

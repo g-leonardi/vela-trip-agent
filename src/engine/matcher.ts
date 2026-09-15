@@ -147,6 +147,26 @@ export function classify(
     if (matching.length > 0) pool = [...matching, ...pool.filter((c) => !matching.includes(c))];
   }
 
+  // An exact date WAS given: among however many candidates are still in
+  // play, prefer one whose own availability window already covers it —
+  // otherwise picking the best fit on budget alone could accidentally
+  // land on a candidate that ALSO then needs a date compromise, when an
+  // equally-good (or better) one needed none at all (found reading the
+  // code after Giuseppe asked for a more sophisticated selection,
+  // 2026-09-15 — minimizing compromises across dimensions, not just
+  // optimizing one in isolation). Reorders, never hard-filters — same
+  // non-destructive pattern as the preferredMonth block above, so a real
+  // date compromise is still possible when nothing in the pool covers
+  // the date at all. A no-op whenever there's only one real candidate,
+  // or when every (or no) candidate already covers the date.
+  if (slots.dateFrom !== null) {
+    const date = slots.dateFrom;
+    const covering = pool.filter((c) => date >= c.minDate && date <= c.maxDate);
+    if (covering.length > 0 && covering.length < pool.length) {
+      pool = [...covering, ...pool.filter((c) => !covering.includes(c))];
+    }
+  }
+
   // Which candidate to propose: normally the API's own top-ranked
   // (relevance/combinedScore) result. When the traveller wants cheap —
   // either because they never gave a budget at all, or said so

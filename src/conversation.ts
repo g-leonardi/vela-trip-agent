@@ -520,7 +520,40 @@ export class ConversationDO extends DurableObject<Env> {
       }
       throw err;
     }
-    const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
+    let ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
+
+    // Nothing at all matched what was asked. Before giving up, try the
+    // traveller's own historically-preferred sport (a real profile
+    // signal — see householdSizeHint's doc, types.ts, for the same
+    // pattern applied elsewhere — never a guess), same city/date/budget
+    // otherwise. Bounded to fire only on this FIRST attempt (never when
+    // `precededBy` is already set, i.e. never on a "rejected"/
+    // "unavailable" retry) so a declined substitution doesn't loop into
+    // offering another one — a second "no" here falls through to the
+    // ordinary no_match path below, asking for more flexibility instead.
+    // Giuseppe, 2026-09-15: simulate "non ho trovato questo, però ho
+    // trovato quest'altro" using what we actually know about the
+    // traveller — always disclosed as a compromise, never applied
+    // silently, same precision policy as every other compromise here.
+    if (!ctx && !precededBy && state.preferredSportHint && state.preferredSportHint !== state.slots.sport) {
+      const altSlots: Slots = { ...state.slots, sport: state.preferredSportHint };
+      try {
+        const alt = await searchCandidates(this.hofj, altSlots, this.env);
+        const altCtx = classify(altSlots, alt.candidates, state.rejectedProductIds, alt.locationMatched);
+        if (altCtx) {
+          ctx = {
+            ...altCtx,
+            category: "compromise",
+            compromise: { kind: "sport_substituted", requested: state.slots.sport ?? "", offered: state.preferredSportHint },
+          };
+        }
+      } catch (err) {
+        if (!(err instanceof QuotaExhaustedError)) throw err;
+        // Quota denial on this best-effort fallback attempt isn't fatal —
+        // fall through to the ordinary no_match path below.
+      }
+    }
+
     if (!ctx) {
       state.stage = "collecting";
       return this.say(state, { kind: "no_match", precededBy, unavailableReason });
