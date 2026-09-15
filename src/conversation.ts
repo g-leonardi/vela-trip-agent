@@ -186,6 +186,12 @@ export class ConversationDO extends DurableObject<Env> {
     if (state.stage === "failed") {
       const wantsRetry = /riprova|di nuovo|ritenta|prova ancora|retry/i.test(text);
       const isBookingFailure = state.failureReason?.startsWith("bookings:") ?? false;
+      // Distinct from a genuine failure (403, or anything else) — this
+      // specific reason means "confirmed but unverifiable", not "might
+      // not have worked" (Carlo, Vela/HOFJ, email 2026-09-15 — see
+      // booking_unverified's own doc, engine/ai.ts). Deserves its own,
+      // reassuring tone here too, not the generic "still stuck" one.
+      const isUnverifiedBooking = state.failureReason?.startsWith("bookings: unverified") ?? false;
       const paymentRetryable = state.failureReason?.startsWith("payment:") && state.itineraryId;
       const bookingRetryable = isBookingFailure && state.itineraryId && state.bookingRetryCount < BOOKING_RETRY_LIMIT;
       if (wantsRetry && paymentRetryable) {
@@ -205,9 +211,11 @@ export class ConversationDO extends DurableObject<Env> {
         ? `Il pagamento non è ancora disponibile. Dimmi "riprova" quando vuoi che ci riprovi, oppure apri una nuova conversazione.`
         : bookingRetryable
           ? `Il pagamento è andato a buon fine, ma non riesco ancora a confermare la prenotazione. Dimmi "riprova" per ritentare solo quella parte.`
-          : isBookingFailure
-            ? `Ho riprovato più volte a confermare la prenotazione, ma il sistema del fornitore continua a non darmi il via libera — non è più un blip temporaneo. Il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è comunque andato a buon fine, e ho già registrato i tuoi dati per un follow-up manuale (riferimento: ${state.itineraryId}) — ti ricontatteremo appena si sblocca. Apri una nuova conversazione se intanto vuoi provare a prenotare qualcos'altro.`
-            : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
+          : isUnverifiedBooking
+            ? `La tua prenotazione risulta effettuata: il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è andato a buon fine, e il codice di riferimento è ${state.itineraryId}. È in attesa dell'ultima conferma tecnica dal sistema del fornitore (un limite noto del loro lato, non un problema della tua prenotazione) — ho già i tuoi dati salvati per seguirla. Apri una nuova conversazione se nel frattempo vuoi prenotare qualcos'altro.`
+            : isBookingFailure
+              ? `Ho riprovato più volte a confermare la prenotazione, ma il sistema del fornitore continua a non darmi il via libera — non è più un blip temporaneo. Il pagamento di ${state.totalPrice ? `${state.totalPrice.amount}${state.totalPrice.currency === "EUR" ? "€" : " " + state.totalPrice.currency}` : "quanto concordato"} è comunque andato a buon fine, e ho già registrato i tuoi dati per un follow-up manuale (riferimento: ${state.itineraryId}) — ti ricontatteremo appena si sblocca. Apri una nuova conversazione se intanto vuoi provare a prenotare qualcos'altro.`
+              : `Questa conversazione si è fermata per un problema tecnico (${state.failureReason ?? "errore"}). Apri una nuova conversazione per riprovare.`;
       state.messages.push({ role: "agent", text: reply, at: Date.now() });
       await this.saveState(state);
       return { reply, state };
@@ -1082,8 +1090,18 @@ export class ConversationDO extends DurableObject<Env> {
       if (snapshot.data.checkout.status === "BookingInitiated") {
         state.stage = "failed";
         state.failureReason = `bookings: unverified — checkout.status still "BookingInitiated" after a 200 response`;
+        // The real reservation code, by construction (Carlo, Vela/HOFJ,
+        // email 2026-09-15) — set even though checkout.status can't
+        // confirm it, since that confirmation is known-unreachable for a
+        // B2B key, not a real unknown (see booking_unverified's own doc,
+        // engine/ai.ts).
+        state.reservationCode = state.itineraryId;
         await this.logFollowUpIfNeeded(state);
-        return this.say(state, { kind: "booking_unverified" });
+        return this.say(state, {
+          kind: "booking_unverified",
+          itineraryId: state.itineraryId!,
+          totalPrice: `${state.totalPrice!.amount}${state.totalPrice!.currency === "EUR" ? "€" : " " + state.totalPrice!.currency}`,
+        });
       }
       state.stage = "booked";
       state.reservationCode = booking.data;

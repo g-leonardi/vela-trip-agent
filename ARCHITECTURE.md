@@ -1411,6 +1411,59 @@ funzionano, con l'unico limite reale rimasto — un client B2B non può
 verificarlo in autonomia oggi — riconosciuto e documentato da chi
 gestisce l'API, non lasciato come domanda aperta.
 
+### Conseguenza diretta della chiusura di Carlo: il tono verso il viaggiatore, quando "unverified" non significa più "forse non ha funzionato" (2026-09-15)
+
+Giuseppe, subito dopo aver letto la chiusura sopra: se Carlo ha
+confermato che queste prenotazioni funzionano davvero, possiamo dirlo al
+viaggiatore con un tono positivo ("la prenotazione è in attesa di essere
+confermata") invece che con un tono da errore/incertezza? Sì, ed è
+un cambiamento diretto e ben fondato — non un'invenzione, una
+conseguenza logica di quanto appena confermato da Vela.
+
+**Prima**: il messaggio per `checkout.status` bloccato su
+"BookingInitiated" diceva letteralmente "il sistema del fornitore non ti
+dà conferma certa che la prenotazione sia stata registrata per davvero"
+— un'incertezza genuina, corretta quando scritta (prima della risposta
+di Carlo), ma non più accurata ora.
+
+**Corretto**: la direttiva `booking_unverified` (`engine/ai.ts`) ora
+porta con sé `itineraryId` e `totalPrice`, e il modello riceve
+l'istruzione esplicita di comunicare con SICUREZZA, mai come un dubbio —
+"la prenotazione risulta effettuata... in attesa dell'ultima conferma
+TECNICA dal sistema del fornitore (un limite noto del loro lato, non un
+problema della prenotazione)", mai le parole "errore"/"problema"/"non
+sono sicuro". Stessa correzione applicata al messaggio deterministico
+gemello per il caso "riprovato più volte, ancora bloccato" in
+`conversation.ts` (distinto ora da un `isUnverifiedBooking` esplicito,
+separato dagli altri fallimenti "bookings:" genuinamente diversi — un
+403, per esempio, resta un problema vero, non riceve questo tono).
+
+**`state.reservationCode` ora viene impostato anche in questo caso**,
+non solo quando `checkout.status` conferma — con `state.itineraryId`,
+il vero codice prenotazione per costruzione (Carlo, punto 2). Non è una
+supposizione specifica a questa prenotazione: è vero indipendentemente
+da quando/se `checkout.status` si aggiorna.
+
+**Cosa NON è cambiato, deliberatamente**: `state.stage` resta `"failed"`
+internamente (bookkeeping per la logica di retry/follow-up, invisibile
+al viaggiatore), e il logging su `FollowUpDO` resta invariato — la
+conferma di Carlo riguarda le prenotazioni GIÀ verificate a mano nel
+backoffice, non un modo per verificare autonomamente ogni prenotazione
+futura, quindi tracciarle per un controllo umano resta la cosa giusta da
+fare.
+
+**Un punto lasciato esplicitamente aperto, non deciso da soli**: la
+frase proposta da Giuseppe includeva "riceverai una mail con tutti i
+dettagli" — una promessa specifica su un invio automatico di HOFJ/Vela
+che non abbiamo verificato. Non inclusa nel messaggio per lo stesso
+motivo per cui non si inventa mai un `price_changed.reason`: non
+prometter al viaggiatore qualcosa che potremmo non mantenere. In attesa
+di conferma da Giuseppe prima di aggiungerla.
+
+Typecheck pulito, 78 test passano — aggiornato anche il test
+`never_confirms` esistente (si aspettava `reservationCode: null`, ora
+corregge correttamente ad aspettarsi il vero codice).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

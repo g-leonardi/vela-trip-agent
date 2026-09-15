@@ -185,13 +185,14 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r2.state.stage).toBe("booked");
   });
 
-  it("never_confirms scenario: a real successful payment with a booking that never confirms fails honestly, never claims 'booked', and logs a follow-up", async () => {
+  it("never_confirms scenario: a real successful payment with a booking that never confirms is reported as confirmed-but-pending (Carlo, Vela/HOFJ, 2026-09-15: checkout.status not updating is a known B2B API limitation, not real doubt) — never 'booked' (unverified), but the itineraryId IS surfaced as the real reference code, and a follow-up is logged", async () => {
     const stub = freshConversation();
     await stub.handleMessage(`${tripDsl("|preferences:SCENARIO:never_confirms")}|${TRAVELLER_DSL}`);
     const r = await stub.handleMessage("decision:yes");
-    expect(r.state.stage).toBe("failed");
+    expect(r.state.stage).toBe("failed"); // internal bookkeeping only — see the traveller-facing tone, not "booked" without real verification
     expect(r.state.paymentStatus).toBe("succeeded");
-    expect(r.state.reservationCode).toBeNull();
+    expect(r.state.reservationCode).toBe(r.state.itineraryId); // the real code, by construction, per Carlo
+    expect(r.state.reservationCode).toBeTruthy();
     expect(r.state.followUpLogged).toBe(true);
     expect(r.state.failureReason).toContain("BookingInitiated");
   });

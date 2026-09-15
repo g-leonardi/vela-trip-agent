@@ -3,6 +3,27 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Tono positivo verso il viaggiatore per "unverified", conseguenza diretta della chiusura di Carlo (2026-09-15)
+
+Prima: "il sistema non mi dà conferma certa" — un'incertezza vera
+quando scritta, non più accurata dopo la conferma di Carlo. Corretto:
+il messaggio ora dice con sicurezza "la prenotazione risulta
+effettuata... in attesa dell'ultima conferma tecnica" — mai
+"errore"/"problema". `state.reservationCode` ora si imposta anche qui
+(= itineraryId, il vero codice per costruzione, confermato da Carlo).
+Distinto esplicitamente (`isUnverifiedBooking`) da altri fallimenti
+"bookings:" genuinamente diversi (es. un 403), che restano con il tono
+originale — non tutto ciò che inizia con "bookings:" è lo stesso caso.
+`state.stage` resta `"failed"` internamente, il follow-up logging
+invariato — la conferma di Carlo non ci dà modo di verificare
+autonomamente prenotazioni future.
+
+**Lasciato deliberatamente fuori**: la promessa di un'email automatica
+("riceverai una mail con i dettagli") — un fatto su un sistema esterno
+che non ho verificato, in attesa di conferma da Giuseppe prima di
+aggiungerlo. 78 test passano (aggiornato anche `never_confirms`).
+Dettaglio in `ARCHITECTURE.md`.
+
 ## CHIUSO: Carlo conferma che le prenotazioni sono davvero confermate (2026-09-15)
 
 Chiude il filo aperto su `checkout.status`/verifica booking (vedi le

@@ -331,7 +331,24 @@ export type SayDirective =
       state: "queued" | "retrying";
     }
   | { kind: "booking_forbidden" }
-  | { kind: "booking_unverified" }
+  | {
+      /** checkout.status never moved off "BookingInitiated" even after a
+       * real, successful confirmBooking 200 — but per Carlo (Vela/HOFJ,
+       * email 2026-09-15), this is a known, confirmed product limitation
+       * of the B2B API surface (real confirmation lives behind an
+       * end-user-only endpoint we have no token for), NOT genuine
+       * uncertainty about whether the booking went through: Carlo
+       * personally checked Vela's internal backoffice and confirmed
+       * every booking made during this session's tests WAS genuinely
+       * confirmed. The traveller-facing tone reflects that — this reads
+       * as "pending, technical limitation on our side", never as "might
+       * have failed". `itineraryId` doubles as the real reservation code
+       * (confirmed by Carlo, point 2 of that same email — it IS the code
+       * by construction, not a guess specific to this booking). */
+      kind: "booking_unverified";
+      itineraryId: string;
+      totalPrice: string;
+    }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
   | { kind: "no_match"; precededBy?: "rejected" | "unavailable"; unavailableReason?: string };
 
@@ -457,13 +474,17 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
     case "booking_forbidden":
       return `C'è un problema di autorizzazione lato nostro sistema che impedisce di confermare la prenotazione in questo momento (non è colpa del viaggiatore né un problema di disponibilità). Scusati, sii onesto e diretto, di' che verrà segnalato internamente.`;
     case "booking_unverified":
-      // Regression found live 2026-09-14: the fornitore's booking
-      // confirmation can return a plausible-looking 200 without actually
-      // registering the reservation (verified via a decisive idempotency
-      // check — see ARCHITECTURE.md). Never tell the traveller "booked"
-      // on a signal we've proven unreliable — this is the honest
-      // alternative when that happens, not a generic error.
-      return `Hai provato a confermare la prenotazione (il pagamento è già andato a buon fine, quello è sicuro), ma il sistema del fornitore non ti dà conferma certa che la prenotazione sia stata registrata per davvero — non vuoi dire "prenotato" se non ne sei sicuro. Spiegalo con onestà in una frase. I suoi dati sono GIÀ stati registrati per un follow-up (non serve chiederglieli di nuovo, li hai già), quindi rassicuralo che verrà ricontattato non appena il fornitore conferma, e chiedi solo se nel frattempo preferisce che ci riprovi subito.`;
+      // Corrected 2026-09-15 after Carlo's (Vela/HOFJ) final word: this
+      // used to read as genuine uncertainty ("non ti dà conferma certa
+      // che la prenotazione sia stata registrata per davvero") — but
+      // Carlo confirmed every booking checked in Vela's own backoffice
+      // during this session's tests WAS genuinely confirmed; the API
+      // signal we can see (checkout.status) simply never reflects it for
+      // a B2B key, a known, acknowledged product limitation, not a real
+      // unknown outcome. NEVER phrase this as an error or as doubt about
+      // whether it worked — it did. Frame it as "confirmed on our side,
+      // pending final confirmation from the system" instead.
+      return `La prenotazione risulta effettuata: il pagamento di ${d.totalPrice} è andato a buon fine, e il codice di riferimento è ${d.itineraryId}. Comunicalo con SICUREZZA, non come un dubbio — dì che è in attesa dell'ultima conferma tecnica dal sistema del fornitore (un limite noto del loro lato, non un problema della prenotazione stessa), e che hai già i suoi dati salvati per seguirla. Tono positivo e rassicurante, MAI parole come "errore", "problema" o "non sono sicuro" — non lo è. Una frase, chiara e calda.`;
     case "booked":
       return `La prenotazione è confermata per davvero. Codice di conferma: ${d.reservationCode}. Pacchetto: "${d.title}", totale pagato ${d.totalPrice}, si parte il ${d.startDate}. Dai un riepilogo operativo breve e caloroso, con il codice ben chiaro.`;
     case "no_match": {
