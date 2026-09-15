@@ -5,7 +5,7 @@ import { extractMonthHint, resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
 import { cachedDiscoveryCall, DISCOVERY_TTL_MS } from "./hofj/discoveryCache";
 import { acquireCriticalOrWait, acquireOptional, QuotaExhaustedError } from "./hofj/quotaClient";
-import { confirmPaymentIntent, createPaymentIntent } from "./stripe/client";
+import { confirmPaymentIntent } from "./stripe/client";
 import {
   EMPTY_SLOTS,
   EMPTY_TRAVELLER,
@@ -772,70 +772,58 @@ export class ConversationDO extends DurableObject<Env> {
     return this.attemptPayment(state);
   }
 
+  /** Gets HOFJ's OWN Stripe PaymentIntent for this itinerary and confirms
+   * IT — not a PaymentIntent we mint ourselves. This is the corrected
+   * flow per Carlo (Vela/HOFJ, email 2026-09-15): HOFJ's booking
+   * confirmation is asynchronous, triggered when Stripe notifies HOFJ
+   * that its own PaymentIntent was paid. An earlier version of this
+   * method created a separate PaymentIntent directly under HOFJ's
+   * Stripe account (the "sanctioned bypass", now removed from
+   * stripe/client.ts) to work around GET .../payment being broken —
+   * once that endpoint got fixed, the bypass silently became the actual
+   * bug: a payment HOFJ's own webhook never sees, so `checkout.status`
+   * stayed on "BookingInitiated" forever no matter how many times
+   * confirmBooking was retried. Priority P0 (booking-critical, see
+   * ARCHITECTURE.md twist Phase 2) — this is now on the critical path,
+   * not an optional/discardable call. */
   private async attemptPayment(state: ConversationState): Promise<string> {
-    // HOFJ's own payment-intent refresh used to 502 unconditionally — now
-    // fixed (verified live 2026-09-14 ~21:35, real client_secret comes
-    // back) — but there's still nowhere for that client_secret to go:
-    // this prototype has no Stripe Elements frontend to confirm it
-    // client-side, and verified live it belongs to a Stripe account our
-    // own key can't read at all (by design, most likely — see
-    // hofj/client.ts's doc on getPaymentIntent). So regardless of whether
-    // this call succeeds or fails, the only path actually completable
-    // from here is the sanctioned direct-Stripe bypass below. Still
-    // called for real every time — not skipped — so it stays a live,
-    // accurate check of upstream status instead of a stale assumption.
-    // Priority P2 (optional, see ARCHITECTURE.md twist Phase 2) — and the
-    // single cheapest one of all: its result is already discarded below
-    // regardless of outcome (see this function's own doc above), so under
-    // quota pressure it's worth skipping outright rather than spending a
-    // real call on it. A single non-blocking check, no retry.
-    if (await acquireOptional(this.env)) {
-      try {
-        await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
-      } catch (err) {
-        if (err instanceof HofjApiError) {
-          console.error("getPaymentIntent failed:", err.status, err.detail.slice(0, 200));
-        }
-      }
+    if (!(await acquireCriticalOrWait(this.env))) {
+      return this.say(state, { kind: "backpressure", state: "queued" });
     }
-    if (this.env.STRIPE_SECRET_KEY) {
-      return this.attemptDirectStripePayment(state);
+    if (!this.env.STRIPE_SECRET_KEY) {
+      state.stage = "failed";
+      state.failureReason = "payment: no payment path available (no Stripe key configured)";
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
     }
-    state.stage = "failed";
-    state.failureReason = "payment: no payment path available (no Stripe key configured)";
-    return this.say(state, { kind: "payment_unavailable", retrying: false });
-  }
-
-  /** Real Stripe test-mode payment, created and confirmed directly against
-   * HOFJ's own account (see stripe/client.ts for why this is sanctioned,
-   * not a hack). Auto-confirms with Stripe's own test card token — a
-   * deliberate demo simplification (documented in ARCHITECTURE.md): a real
-   * production flow would hand the client_secret to the frontend for the
-   * actual cardholder to confirm via Stripe Elements, never touch card
-   * details server-side. There is no such frontend integration yet in
-   * this prototype. */
-  private async attemptDirectStripePayment(state: ConversationState): Promise<string> {
+    let clientSecret: string;
     try {
-      const amountMinorUnits = Math.round(Number(state.totalPrice!.amount) * 100);
-      const intent = await createPaymentIntent(this.env, {
-        amountMinorUnits,
-        currency: state.totalPrice!.currency,
-        itineraryId: state.itineraryId!,
-      });
-      const confirmed = await confirmPaymentIntent(this.env, intent.id);
-      state.paymentIntentId = intent.id;
+      const intent = await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
+      clientSecret = intent.data;
+    } catch (err) {
+      state.stage = "failed";
+      state.failureReason = `payment: getPaymentIntent — ${err instanceof HofjApiError ? `${err.status} ${err.detail.slice(0, 200)}` : err instanceof Error ? err.message : String(err)}`;
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
+    }
+    // Stripe client_secrets are "<paymentIntentId>_secret_<...>" — the id
+    // is HOFJ's own PaymentIntent, the one its webhook is subscribed to.
+    const paymentIntentId = clientSecret.split("_secret_")[0];
+    if (!paymentIntentId) {
+      state.stage = "failed";
+      state.failureReason = `payment: unexpected client_secret shape: "${clientSecret.slice(0, 40)}"`;
+      return this.say(state, { kind: "payment_unavailable", retrying: false });
+    }
+    try {
+      // Confirms with Stripe's own official test card token — a
+      // deliberate demo simplification (see stripe/client.ts's doc on
+      // confirmPaymentIntent): a real production flow would hand this
+      // same client_secret to the frontend for the actual cardholder to
+      // confirm via Stripe Elements, never touch card details
+      // server-side. There is no such frontend integration yet here.
+      const confirmed = await confirmPaymentIntent(this.env, paymentIntentId);
+      state.paymentIntentId = confirmed.id;
       state.paymentStatus = confirmed.status;
-      // Real payment succeeded. "full" because that's what we actually
-      // just did — charged the entire total in one PaymentIntent, not a
-      // deposit — not a guess at what the gateway wants (verified live
-      // 2026-09-14 ~21:35 that the paymentType field itself is no longer
-      // rejected either way). paymentIntentId/paymentStatus (persisted
-      // above, forwarded inside confirmBookingNow) per the full OpenAPI
-      // spec (GET /v1/openapi.json) — without them the brand site has
-      // nothing to attach the payment to at all. Still not sufficient for
-      // a genuinely completed booking as of that same verification (see
-      // confirmBooking's doc, hofj/client.ts) — sent anyway, spec-correct,
-      // since that gap may close without notice on a shared backend.
+      // "full" because that's what we actually just did — charged the
+      // entire total in one PaymentIntent, not a deposit.
       return this.confirmBookingNow(state, "full");
     } catch (err) {
       state.stage = "failed";
@@ -846,23 +834,30 @@ export class ConversationDO extends DurableObject<Env> {
 
   /** Confirms the real booking with HOFJ. Only ever called after a real
    * payment has already succeeded (either via a future Stripe.js frontend
-   * confirming client-side — confirmPaymentAndBook() below — or via the
-   * direct-Stripe fallback above), so every failure path here uses the
+   * confirming client-side — confirmPaymentAndBook() below — or via
+   * attemptPayment() above), so every failure path here uses the
    * "bookings:" failureReason prefix, never "payment:" — retrying this
    * specific step should never re-charge anything.
    *
-   * A 200 from POST /v1/bookings is NOT sufficient proof of a real
-   * booking — verified live 2026-09-14 ~22:10 with a decisive idempotency
-   * check (see ARCHITECTURE.md): the exact same request, repeated on the
-   * same itinerary, returned a completely different `data` value each of
-   * the first two times and then stabilized into echoing the itineraryId
-   * back — never the same value twice, which rules out it being a real
-   * stored reservation code (the endpoint is documented as an idempotent
-   * upsert; a genuine one would come back identical every time). So this
-   * always re-fetches the itinerary afterward and requires
-   * `checkout.status` to have actually moved away from
-   * "BookingInitiated" before ever telling the traveller "booked" — the
-   * one signal that can't be faked by a plausible-looking response. */
+   * A 200 from POST /v1/bookings alone was read live 2026-09-14 ~22:10
+   * as NOT sufficient proof of a real booking (an idempotency check on
+   * the same itinerary that seemed to return different `data` values
+   * across attempts — see ARCHITECTURE.md). Carlo (Vela/HOFJ, email
+   * 2026-09-15) corrected the underlying model: `data` genuinely is the
+   * saved reservation code (= itineraryId) by construction, and a 200
+   * IS real persistence proof; the earlier different-values observation
+   * most likely came from retries that weren't actually hitting the
+   * same itinerary. `checkout.status` staying on "BookingInitiated",
+   * though, was real — not because the 200 lies, but because HOFJ's
+   * confirmation is asynchronous, gated on Stripe notifying HOFJ about
+   * ITS OWN PaymentIntent (see getPaymentIntent's doc, hofj/client.ts,
+   * for the fix). The check below stays regardless — it costs nothing
+   * and stays honest either way, whether the remaining gap is a fixed
+   * root cause finally converging or a genuinely slower webhook landing
+   * a moment later — and requires `checkout.status` to have actually
+   * moved away from "BookingInitiated" before ever telling the
+   * traveller "booked" — the one signal that can't be faked by a
+   * plausible-looking response. */
   /** Writes a durable record of a real charge whose booking couldn't be
    * confirmed, so the "lascia i tuoi dati, ti ricontatto" promise
    * (booking_unverified/payment_unavailable's wording) is actually backed
@@ -944,11 +939,13 @@ export class ConversationDO extends DurableObject<Env> {
   }
 
   /** Invoked by the frontend once Stripe.js confirms the card payment
-   * client-side. Currently unreachable in practice — attemptPayment() falls
-   * back to the direct-Stripe path instead of ever reaching "paying" while
-   * GET .../payment 502s — but implemented to spec so the last mile just
-   * works the moment that upstream bug is fixed and a real Elements
-   * integration exists in the frontend. */
+   * client-side. Currently unreachable in practice — attemptPayment()
+   * confirms HOFJ's own PaymentIntent server-side itself (Stripe's
+   * official test card token, see stripe/client.ts), never setting
+   * stage="paying" — but implemented to spec so the last mile just works
+   * the moment a real Stripe Elements integration exists in the
+   * frontend and card confirmation genuinely needs to happen
+   * client-side instead of server-side. */
   async confirmPaymentAndBook(): Promise<HandleMessageResult> {
     const state = await this.loadState();
     if (state.stage !== "paying" || !state.itineraryId) {

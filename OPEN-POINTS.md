@@ -93,6 +93,26 @@ non fallimenti applicativi — vedi `ARCHITECTURE.md` per il dettaglio e
 per l'idea di un run successivo contro un deploy reale, non ancora fatto
 senza consenso esplicito.
 
+## Risposta di Carlo sul booking non verificabile — root cause vero, nuovo blocco preciso trovato (2026-09-15)
+
+Carlo ha chiarito tutti e quattro i punti aperti: il 200 di
+`POST /v1/bookings` È persistenza reale (l'idempotenza lo dimostra); il
+codice prenotazione È l'itineraryId per costruzione (l'esempio "R-12345"
+nello spec era sbagliato, lo corregge lui); `GET /v1/bookings/{id}` 401
+con chiave B2B è un gap reale del loro prodotto, non nostro.
+
+**Il pezzo importante**: "BookingInitiated" bloccato era vero, causa
+nostra — la conferma è asincrona via webhook Stripe sul PaymentIntent DI
+HOFJ, e il nostro "bypass sanzionato" (creare un PaymentIntent nostro)
+era invisibile a quel webhook. **Implementato il fix** (rimosso
+`attemptDirectStripePayment`/`createPaymentIntent`, `attemptPayment` ora
+usa `getPaymentIntent()` + conferma quello). **Verificato dal vivo
+subito**: bloccato da un permesso Stripe mancante sulla chiave
+(`connected_account_read`, coerente con un setup Stripe Connect) — non
+più un mistero, un errore preciso e azionabile. Codice corretto secondo
+Carlo, resta solo il permesso da abilitare lato Vela. Dettaglio completo
+in `ARCHITECTURE.md`.
+
 ## Robustezza sul booking non verificabile (2026-09-15 ~00:20)
 
 Due mancanze reali, corrette: (1) "riprova" non aveva limite anche su un

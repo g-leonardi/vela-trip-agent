@@ -771,6 +771,97 @@ crediti Anthropic per un prototipo potrebbe mai sostenere comunque. Il
 load test di questa sezione lo dimostra per costruzione: gira interamente
 con `STUB_MODE`, zero chiamate AI reali, zero costo.
 
+### Risposta di Carlo (Vela/HOFJ) sul booking non verificabile — il root cause vero, e un nuovo blocco preciso trovato verificandolo (2026-09-15)
+
+Carlo ha risposto punto per punto ai dubbi aperti su idempotenza,
+formato del codice prenotazione e stato "BookingInitiated" bloccato
+(vedi sezione precedente su idempotenza e follow-up). Quattro
+chiarimenti, presi uno per uno:
+
+1. **Il 200 di `POST /v1/bookings` È garanzia di persistenza reale** —
+   l'idempotenza stessa lo dimostra: se non salvasse nulla non potrebbe
+   restituire lo stesso codice due volte. La nostra osservazione di
+   valori diversi tra tentativi (vedi sezione idempotenza sopra) era
+   quasi certamente dovuta a itinerary diversi tra un tentativo e
+   l'altro, non a un comportamento non idempotente del sistema.
+2. **Il codice prenotazione È l'`itineraryId`**, per costruzione — non
+   un eco degenere. L'esempio `"R-12345"` nella spec OpenAPI è
+   semplicemente sbagliato e Carlo lo corregge lato loro. Codice
+   aggiornato di conseguenza (doc comment di `confirmBooking`,
+   `hofj/client.ts`).
+3. **"BookingInitiated" bloccato è invece un problema vero — e la causa
+   è nostra, non di HOFJ**: `POST /v1/bookings` scrive una prenotazione
+   in stato "pending"; la conferma a "confirmed" è ASINCRONA e avviene
+   solo quando **Stripe notifica HOFJ** che il SUO PROPRIO PaymentIntent
+   (quello restituito da `GET /v1/itineraries/{id}/payment`) è stato
+   pagato. Il "bypass sanzionato" che avevamo costruito in precedenza
+   (creare un PaymentIntent nostro, direttamente contro l'account
+   Stripe di HOFJ, per aggirare `.../payment` quando era rotto — vedi
+   sezione storica sopra) era la causa esatta del blocco: una volta che
+   `.../payment` è stato sistemato lato HOFJ, il bypass è rimasto in
+   uso per inerzia ed è diventato esso stesso il bug — un pagamento che
+   il webhook di HOFJ non vede mai, quindi la prenotazione resta
+   "pending" per sempre, indipendentemente da quanti retry si facciano
+   su `confirmBooking`.
+4. **`GET /v1/bookings/{id}` risponde 401 con una chiave B2B**, confermato
+   da Carlo come problema reale del loro prodotto (manca un modo per un
+   client B2B di verificare lo stato di una prenotazione appena creata),
+   non un nostro errore — lasciato qui come richiesto esplicitamente.
+
+**Implementato subito** (`hofj/client.ts`, `stripe/client.ts`,
+`conversation.ts`): rimosso interamente `attemptDirectStripePayment` /
+`createPaymentIntent` (il bypass che creava un PaymentIntent nostro).
+`attemptPayment()` ora chiama `getPaymentIntent()` (P0, non più P2
+opzionale — prima il suo risultato veniva scartato, ora è la chiamata
+critica), estrae l'id del PaymentIntent DI HOFJ dal `client_secret`
+(`<paymentIntentId>_secret_<...>`), e conferma QUELLO tramite Stripe,
+esattamente come indicato da Carlo.
+
+**Verificato dal vivo subito dopo, con una chiamata diretta HOFJ+Stripe
+reale (bypassando l'NLU per isolare esattamente questo meccanismo, dato
+che Workers AI ha esaurito la soglia gratuita giornaliera in locale —
+vedi "Da tenere d'occhio", OPEN-POINTS.md)**: creato un itinerary reale
+(prodotto 988, "Roma Tennis Experience", 465€), ottenuto un vero
+`client_secret` da `GET .../payment`
+(`pi_3UFt1d2MSF7Nczk01g9kJ2wD_secret_...`), e provato a confermarlo con
+la nostra chiave Stripe restricted. **Bloccato da un problema nuovo,
+diverso da quello ipotizzato in precedenza**: non un 404
+"resource_missing" generico attribuito a "un account che la nostra
+chiave non può leggere per design", ma un errore Stripe specifico e
+azionabile — `GET /v1/account` con la nostra chiave restituisce
+esplicitamente:
+
+> "Permission denied. The provided key 'rk_test_...alFk' does not have
+> the required permissions for this endpoint on account
+> 'acct_1QQ56vRpam3eRRKb'. Enabling **Accounts Read
+> ('connected_account_read')** permissions on this key would allow this
+> request to continue."
+
+Questo è coerente al 100% con un setup **Stripe Connect**: HOFJ (o il
+brand specifico) opera su un *connected account*, e la nostra chiave
+restricted — pur essendo valida sull'account piattaforma
+(`acct_1QQ56vRpam3eRRKb`) — non ha il permesso `connected_account_read`
+necessario per leggere o confermare un PaymentIntent che vive
+sull'account collegato. Non è più un mistero ("account che non possiamo
+leggere per design") ma un permesso mancante, preciso, con un link
+diretto per abilitarlo nel messaggio di errore stesso.
+
+**Conclusione onesta**: la logica del codice ora è quella corretta
+secondo la spiegazione di Carlo — non torniamo al vecchio bypass, che è
+un vicolo cieco dimostrato (paga ma non conferma mai). Resta bloccata
+solo dal permesso mancante sulla chiave (o, in alternativa, serve l'id
+dell'account collegato per passare l'header `Stripe-Account` con una
+chiave che abbia il permesso di operare per suo conto). Il sistema
+fallisce onestamente in questo stato (`attemptPayment` cattura l'errore,
+imposta `stage: "failed"` con un motivo preciso, non dichiara mai un
+successo falso) — non è un regresso rispetto a prima, è lo stesso
+comportamento di fallback onesto, solo per una ragione ora precisa e
+comunicabile invece che genericamente "l'account non è il nostro".
+**Domanda precisa da girare a Carlo**: la chiave restricted può avere
+il permesso `connected_account_read`/`connected_account_write`
+abilitato, oppure serve l'id del connected account per usare l'header
+`Stripe-Account` lato nostro?
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

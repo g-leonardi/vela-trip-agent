@@ -246,8 +246,11 @@ export interface ConversationState {
    * a later turn (attemptPayment, confirmBookingNow) still targets the
    * right brand even if `proposal` itself has since changed or cleared. */
   brand: string | null;
-  /** The Stripe PaymentIntent id/status from our own sanctioned-bypass
-   * payment (see stripe/client.ts), forwarded to POST /v1/bookings as
+  /** The Stripe PaymentIntent id/status — HOFJ's OWN PaymentIntent
+   * (fetched via getPaymentIntent, confirmed via stripe/client.ts; see
+   * attemptPayment's doc, conversation.ts, and Carlo's 2026-09-15
+   * correction for why it must be HOFJ's own, not one we mint
+   * ourselves), forwarded to POST /v1/bookings as
    * `paymentIntentId`/`paymentStatus` — documented, optional fields the
    * brand site needs to attach a real payment to the booking (see
    * confirmBooking's doc, hofj/client.ts). Persisted so a "riprova" on a

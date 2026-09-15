@@ -45,25 +45,6 @@ async function request(env: Env, path: string, params: Record<string, string>): 
   return json;
 }
 
-/** Creates a real Stripe PaymentIntent directly against HOFJ's own Stripe
- * account — confirmed by Vela (Carlo, 2026-09-15) as the sanctioned bypass
- * for their own broken GET .../payment endpoint, not a workaround we
- * invented unilaterally. `metadata.checkoutRefId = itineraryId` is the
- * exact key HOFJ's own backend uses internally (verified live: found 38
- * real succeeded PaymentIntents in this same account with that precise
- * metadata shape before writing this). See ARCHITECTURE.md. */
-export async function createPaymentIntent(
-  env: Env,
-  params: { amountMinorUnits: number; currency: string; itineraryId: string },
-): Promise<PaymentIntent> {
-  return request(env, "/payment_intents", {
-    amount: String(params.amountMinorUnits),
-    currency: params.currency.toLowerCase(),
-    "payment_method_types[]": "card",
-    "metadata[checkoutRefId]": params.itineraryId,
-  });
-}
-
 /** Confirms with Stripe's own official test card token. Deliberate demo
  * simplification, documented as such in ARCHITECTURE.md: a real
  * production flow hands the client_secret to the frontend for Stripe

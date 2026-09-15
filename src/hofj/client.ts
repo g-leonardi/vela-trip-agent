@@ -308,15 +308,24 @@ export class HofjClient {
     return this.request("PUT", `/v1/itineraries/${itineraryId}/pax`, { body: pax, brand });
   }
 
-  /** Refresh the Stripe PaymentIntent and return its client_secret. Was
-   * broken all day (502, upstream 405) — verified FIXED live 2026-09-14
-   * ~21:35 (real client_secret returned). Still can't be driven to
-   * completion from here, though: the PaymentIntent it returns belongs to
-   * a Stripe account our own key can't read (verified live: both GET and
-   * confirm 404 "resource_missing") — by design, most likely, since the
-   * real flow expects the traveller's own browser to confirm it
-   * client-side with the brand's own publishable key. See conversation.ts
-   * (attemptPayment) and ARCHITECTURE.md for the full trail. */
+  /** Refresh the Stripe PaymentIntent and return its client_secret — THE
+   * critical call in the payment pipeline, not an optional/discardable
+   * one (see attemptPayment, conversation.ts). Was broken all day (502,
+   * upstream 405) — verified FIXED live 2026-09-14 ~21:35. An earlier
+   * verification that day found confirming THIS client_secret's
+   * PaymentIntent with our own key 404ed ("resource_missing"), which was
+   * read at the time as "belongs to an account we can't touch" — Carlo
+   * (Vela/HOFJ, email 2026-09-15) corrected the real cause: HOFJ's own
+   * booking confirmation is ASYNCHRONOUS, triggered only when Stripe
+   * notifies HOFJ that THIS specific PaymentIntent (the one returned
+   * here, created under HOFJ's own account/webhook subscription) was
+   * paid — a separate PaymentIntent we mint ourselves (the old
+   * createPaymentIntent() bypass, now removed from stripe/client.ts) is
+   * invisible to that webhook, so POST /v1/bookings correctly stays
+   * "pending" (surfaced as checkout.status "BookingInitiated") forever,
+   * no matter how many times it's retried — not a bug in HOFJ's signal,
+   * a wrong PaymentIntent on our side. See ARCHITECTURE.md for the full
+   * correction and the live re-verification after this fix. */
   getPaymentIntent(itineraryId: string, brand: string): Promise<{ data: string }> {
     return this.request("GET", `/v1/itineraries/${itineraryId}/payment`, { brand });
   }
@@ -324,25 +333,18 @@ export class HofjClient {
   /** Confirm the booking after Stripe payment succeeds. `paymentType`
    * ("full" or "plan"/deposit) used to be silently rejected by the
    * gateway regardless of value — verified FIXED live 2026-09-14 ~21:35
-   * (real 200, no more ZodError). But a 200 here isn't the whole story:
-   * the full spec (`GET /v1/openapi.json`, not in the version originally
-   * reviewed) documents two more optional fields, `paymentIntentId` and
-   * `paymentStatus`, "forwarded to the brand site when present" — without
-   * them the brand site has no way to know which payment to attach, and
-   * verified live that the response is a degenerate one even after this
-   * fix: `data` just echoes back the itineraryId instead of a real
-   * "R-12345"-shaped reservation code (spec's own example), and the
-   * itinerary's `checkout.status` stays "BookingInitiated" rather than
-   * moving to a booked state — true even when `paymentIntentId`/
-   * `paymentStatus` ARE forwarded, pointing at a real, confirmed
-   * PaymentIntent from our own sanctioned-bypass Stripe account. Most
-   * likely explanation: the brand site can't verify a PaymentIntent from
-   * an account it doesn't itself own — expected in a *real* deployment,
-   * where the traveller's own browser would confirm HOFJ's own
-   * `GET .../payment` client_secret with the brand's own publishable key,
-   * never something minted server-side under our own bypass account. See
-   * ARCHITECTURE.md for the full trail — this is the accurate, current
-   * state, not a guess. */
+   * (real 200, no more ZodError). `paymentIntentId`/`paymentStatus`
+   * (documented in the full spec, `GET /v1/openapi.json`) are what let
+   * the brand site attach the right payment to the booking.
+   *
+   * `data` echoes back the itineraryId rather than an "R-12345"-shaped
+   * code — Carlo (Vela/HOFJ, email 2026-09-15) confirmed this IS the real
+   * reservation code by construction, not a degenerate response; the
+   * "R-12345" example in the OpenAPI spec is simply wrong and gets
+   * corrected on their side. `checkout.status` staying "BookingInitiated"
+   * after a 200, though, was real — see getPaymentIntent's doc above for
+   * the actual root cause (a PaymentIntent HOFJ's webhook never sees) and
+   * conversation.ts (attemptPayment) for the fix. */
   confirmBooking(
     itineraryId: string,
     brand: string,
