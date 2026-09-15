@@ -3,6 +3,23 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## CHIUSO: Carlo conferma che le prenotazioni sono davvero confermate (2026-09-15)
+
+Chiude il filo aperto su `checkout.status`/verifica booking (vedi le
+voci sotto). Carlo: `checkout.status` non è il segnale giusto — la
+conferma vera richiede un token end-user che una chiave B2B non ha
+(401, confermato da Vela, non più una nostra ipotesi). **Punto
+decisivo**: ha controllato personalmente nel backoffice interno di Vela
+(accesso che non abbiamo) e conferma che le prenotazioni fatte durante
+i test di questa sessione sono davvero confermate — non verificabile in
+autonomia con le nostre credenziali, ma una conferma esterna reale.
+Detto esplicitamente di non bloccarsi qui (ne parlerà con Giuseppe al
+debrief). **Codice invariato**: la cautela in `confirmBookingNow` (mai
+dire "prenotato" senza verifica, follow-up loggato quando non si può
+confermare) resta com'è — la conferma di Carlo riguarda le prenotazioni
+specifiche di oggi, non ci dà un modo per verificare autonomamente
+qualsiasi prenotazione futura. Dettaglio in `ARCHITECTURE.md`.
+
 ## Vincolo esplicito del brief + secondo gap trovato riguardando tutta la pipeline (2026-09-15)
 
 Giuseppe ha chiarito perché il caso `productId 19` contava così tanto:

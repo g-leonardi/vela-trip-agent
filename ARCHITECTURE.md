@@ -1363,6 +1363,54 @@ causa).
 
 Typecheck pulito, 78 test passano (77 + 1 nuovo).
 
+### CHIUSURA: Carlo conferma — le prenotazioni sono davvero confermate, il limite di verifica è reale e documentato, non un problema nostro (2026-09-15)
+
+Aggiornamento definitivo da Carlo (Vela/HOFJ), che chiude il filo aperto
+dalle sezioni precedenti su `checkout.status` bloccato su
+"BookingInitiated" e sulla verifica end-to-end mai raggiunta in
+autonomia. Non lasciato scritto come "in attesa" — ecco la risposta,
+chiara:
+
+1. **Confermato**: `checkout.status` sull'itinerary NON è il segnale
+   affidabile da controllare — la conferma vera vive solo dietro
+   `GET /v1/bookings/{id}`, che richiede un token end-user
+   (`X-End-User-Authorization`) che una chiave B2B da sviluppatore non
+   ha (401 — esattamente quanto già verificato in modo indipendente in
+   questa sessione, vedi sopra). Non è più una nostra ipotesi, è
+   confermato da Vela stessa.
+2. **Confermato anche il punto più importante**: Carlo ha controllato
+   personalmente nel backoffice interno di Vela (un accesso che noi non
+   abbiamo) e conferma che **le prenotazioni fatte durante i test di
+   questa sessione risultano davvero confermate**. Non possiamo
+   verificarlo in autonomia con le nostre credenziali B2B — ma è una
+   conferma esterna reale, di qualcuno con accesso che noi non abbiamo,
+   non una nostra supposizione o un'inferenza indiretta.
+3. Carlo ha detto esplicitamente di non bloccarsi su questo — ne parlerà
+   con Giuseppe al colloquio di debrief. Non c'è quindi un modo da
+   aggirare qui con le credenziali attuali, ed è corretto così: non è
+   più un mistero da investigare, è un limite noto e riconosciuto anche
+   da chi gestisce l'API.
+
+**Cosa NON cambia nel codice, deliberatamente**: la cautela in
+`confirmBookingNow` (mai dire "prenotato" al viaggiatore finché
+`checkout.status` non si è mosso da "BookingInitiated", il follow-up
+loggato su `FollowUpDO` quando non si può verificare) resta esattamente
+com'è. La conferma di Carlo riguarda le prenotazioni SPECIFICHE fatte
+oggi durante i test, verificate una per una nel backoffice — non ci dà
+un modo per verificare AUTONOMAMENTE una prenotazione futura qualsiasi,
+quindi il sistema deve continuare a comportarsi con la stessa onestà
+verso ogni singolo viaggiatore, caso per caso, non fidarsi ciecamente
+del 200 in generale d'ora in poi.
+
+**Il quadro completo, ora chiuso**: il 200 di `POST /v1/bookings` è
+persistenza reale (punto 1, sezione precedente); il codice prenotazione
+è l'itineraryId per costruzione (punto 2, sezione precedente); la causa
+del blocco era nostra, il bypass Stripe ormai corretto (punto 3, sezione
+precedente); e ora, la prova che le prenotazioni completate davvero
+funzionano, con l'unico limite reale rimasto — un client B2B non può
+verificarlo in autonomia oggi — riconosciuto e documentato da chi
+gestisce l'API, non lasciato come domanda aperta.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
