@@ -1239,6 +1239,65 @@ Typecheck pulito, 76 test passano (66 + 10 nuovi). Nessuna regressione
 sul load test, verificato con una corsa di controllo (100 viaggiatori,
 30s, 0% errori HTTP, stesso schema di prima).
 
+### Terzo caso reale di prodotto rotto — verificato da Giuseppe, gap confermato leggendo il codice, fix con lo stesso meccanismo già esistente (2026-09-15)
+
+Giuseppe, prima del deploy: caso riproducibile, diverso dai due bug di
+brand-mismatch già chiusi (Lanzarote) — `productId 19` ("M3 Padel Week",
+brand `booking.hofj.com`, produzione): `createItinerary` riesce
+(il carrello si apre per davvero), ma la primissima lettura successiva,
+`GET /v1/itineraries/{id}`, fallisce con 502 — dettaglio upstream:
+`ZodError` su `paymentOptionsConfiguration.installmentPlans[0].deposit`,
+"Too small: expected number to be >0". Un problema di configurazione
+pagamento rotto lato fornitore, specifico al prodotto (un altro prodotto
+sullo stesso brand leggeva normalmente, secondo la verifica originale).
+
+**Il gap segnalato**: in `openRealCartAndAttemptPayment`, la chiamata
+`getItinerary` per lo snapshot stava FUORI dal try/catch che gestisce il
+fallback "prodotto non prenotabile" — quel fallback copriva solo i
+fallimenti di `createItinerary`. Un fallimento di `getItinerary` subito
+dopo, invece, risaliva fino al gestore generico
+(`handleUnexpectedError`), che tratta un errore HOFJ retryable (come un
+502) come transitorio ("il sistema è lento, riprova") — fuorviante per
+un prodotto rotto in modo permanente, che avrebbe dato lo stesso identico
+errore ad ogni tentativo.
+
+**Verificato prima di toccare codice, non preso per buono**: tentata la
+riproduzione esatta — non riuscita. Il catalogo di staging non ha affatto
+`productId 19`; su produzione, sia `productId 19` sia il prodotto di
+controllo indicato come funzionante (`769`) rispondono ora con 404
+NOT_FOUND_ERROR su tutti e tre i brand — coerente con quanto già
+documentato più volte in questa sessione: l'inventario HOFJ è condiviso
+e cambia senza preavviso (due bloccanti storici erano già scomparsi allo
+stesso modo). Non è stato quindi possibile riprodurre l'ERRORE ESATTO in
+questo momento — ma **il gap nel codice è confermato al 100% leggendo il
+sorgente**, indipendentemente da quale prodotto specifico lo scateni in
+un dato momento: `getItinerary` alla riga incriminata era letteralmente
+fuori da qualunque try/catch locale. La diagnosi di Giuseppe sul
+comportamento risultante (trattato come errore transitorio, fuorviante
+per un guasto permanente) è verificabile leggendo `handleUnexpectedError`
+ed è corretta.
+
+**Corretto con lo stesso meccanismo già esistente** per il fallimento di
+`createItinerary` — nessuna logica nuova, solo esteso a un secondo punto
+del flusso: `getItinerary` ora è dentro un try/catch dedicato; su un
+`HofjApiError`, scarta il prodotto (`rejectedProductIds`), pulisce
+esplicitamente il carrello ormai abbandonato (`itineraryId`/`brand`
+tornano `null` — quel carrello non è più utilizzabile per il prossimo
+candidato), e propone l'alternativa migliore con la motivazione reale
+(`err.detail`, stessa disciplina già stabilita per il fallimento di
+`createItinerary`).
+
+**Test aggiunto**, come richiesto, senza dover colpire l'API reale ogni
+volta: nuovo scenario stub `broken_product_config`
+(`hofj/client.ts`, `STUB_SCENARIOS`) — `createItinerary` riesce
+davvero, ma la lettura successiva fallisce sempre con lo stesso 502/
+ZodError del caso reale. Un test dedicato in `conversation.test.ts`
+verifica: il prodotto rotto viene scartato, il carrello abbandonato
+viene ripulito (`itineraryId` torna `null`), e la prenotazione si
+completa comunque sul prodotto alternativo.
+
+Typecheck pulito, 77 test passano (76 + 1 nuovo).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

@@ -3,6 +3,26 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Terzo caso reale di prodotto rotto: gap in getItinerary, stesso fix già esistente (2026-09-15)
+
+Giuseppe: `productId 19` ("M3 Padel Week", produzione) — `createItinerary`
+riesce, ma la lettura immediata successiva (`getItinerary`) fallisce
+sempre con 502/ZodError su `paymentOptionsConfiguration` — un problema
+di configurazione pagamento rotto lato fornitore, specifico al prodotto.
+**Gap confermato leggendo il codice**: quella chiamata `getItinerary`
+era fuori da qualunque try/catch, quindi risaliva al gestore generico
+che tratta i 502 come transitori — fuorviante per un guasto permanente.
+
+**Non riprodotto l'errore esatto** (l'inventario condiviso è
+probabilmente cambiato nel frattempo — anche il prodotto "di controllo"
+ora dà 404 su tutti i brand di produzione), ma il gap nel codice non
+dipende da quale prodotto lo scateni. Corretto estendendo lo STESSO
+meccanismo già usato per `createItinerary` (scarta il prodotto, pulisce
+il carrello abbandonato, propone l'alternativa con motivazione reale) —
+nessuna logica nuova. Nuovo scenario stub `broken_product_config` +
+test dedicato, senza colpire l'API reale. 77 test passano (76 + 1).
+Dettaglio in `ARCHITECTURE.md`.
+
 ## Test deterministici su conversation.ts, riusando STUB_MODE del load test (2026-09-15)
 
 Richiesta di Giuseppe prima del prossimo deploy: la macchina a stati

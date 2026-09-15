@@ -799,7 +799,38 @@ export class ConversationDO extends DurableObject<Env> {
     state.itineraryId = created.data.itineraryId;
     state.brand = brand;
 
-    const snapshot = await this.hofj.getItinerary(state.itineraryId, brand);
+    // Gap found by Giuseppe, verified 2026-09-15, real and distinct from
+    // the two earlier "product not bookable" false alarms (both turned
+    // out to be the brand-mismatch bug, see createItinerary's own doc
+    // above): a product whose OWN payment configuration is broken
+    // server-side — createItinerary succeeds (a real cart genuinely
+    // opens), but the very next read, this getItinerary, 502s with a
+    // ZodError on paymentOptionsConfiguration.installmentPlans[0].deposit
+    // ("Too small: expected number to be >0") — a permanent, per-product
+    // data problem, not a transient one, and a DIFFERENT product on the
+    // same brand read back fine, confirming it's not brand-wide. Without
+    // this try/catch, that HofjApiError fell all the way through to
+    // handleUnexpectedError, which treats a retryable HOFJ error as "the
+    // system is slow, try again" — actively misleading here, since
+    // retrying gets the exact same 502 every time. Same fallback
+    // discipline already applied to createItinerary's own failure above:
+    // reject this specific product, clear the cart we can no longer use,
+    // and propose the next best candidate with the real reason.
+    let snapshot;
+    try {
+      snapshot = await this.hofj.getItinerary(state.itineraryId, brand);
+    } catch (err) {
+      if (err instanceof HofjApiError) {
+        console.error("getItinerary (post-create) failed:", err.status, err.detail.slice(0, 200));
+        state.rejectedProductIds.push(candidate.productId);
+        state.proposal = null;
+        state.itineraryId = null;
+        state.brand = null;
+        state.stage = "collecting";
+        return this.searchAndPropose(state, "unavailable", err.detail.slice(0, 200));
+      }
+      throw err;
+    }
     const livePrice = Number(snapshot.data.totalPrice.amount);
     // Verified live 2026-09-15 (sessionId 04022cc9-..., then confirmed
     // again when Giuseppe asked "quindi mi aspetto che il prezzo a

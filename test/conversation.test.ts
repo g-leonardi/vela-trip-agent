@@ -124,6 +124,20 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r2.state.stage).toBe("booked");
   });
 
+  it("broken_product_config scenario (real case, Giuseppe 2026-09-15, productId 19 \"M3 Padel Week\"): a cart that genuinely opens but whose immediate re-read permanently 502s rejects the product with the real reason and clears the abandoned cart, instead of being misread as a transient 'system is slow' error", async () => {
+    const stub = freshConversation();
+    await stub.handleMessage(`${tripDsl("|preferences:SCENARIO:broken_product_config")}|${TRAVELLER_DSL}`);
+    const r1 = await stub.handleMessage("decision:yes");
+    expect(r1.state.stage).toBe("proposing");
+    expect(r1.state.proposal?.candidate.productId).not.toBe("9006");
+    expect(r1.state.rejectedProductIds).toContain("9006");
+    // The abandoned cart from the broken product must not linger.
+    expect(r1.state.itineraryId).toBeNull();
+
+    const r2 = await stub.handleMessage("decision:yes");
+    expect(r2.state.stage).toBe("booked");
+  });
+
   it("unavailable scenario (requested date == the scenario's own minDate, isolating this branch from the date-fallback one): rejects the original package for a REAL reason and finds a genuine alternative", async () => {
     const stub = freshConversation();
     // 1 gennaio 2026 matches STUB_SCENARIOS.unavailable's own minDate —

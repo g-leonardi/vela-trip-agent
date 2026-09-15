@@ -109,6 +109,16 @@ const STUB_SCENARIOS = {
   // session is blocked on (see ARCHITECTURE.md, the Carlo email
   // thread) — exercises the booking_unverified branch.
   never_confirms: { productId: 9005, minDate: "2026-01-01", maxDate: "2027-12-31" },
+  // createItinerary succeeds (a real cart genuinely opens), but the very
+  // next read — this getItinerary — 502s, same shape as a real, verified
+  // case (Giuseppe, 2026-09-15: productId 19 "M3 Padel Week", a broken
+  // paymentOptionsConfiguration server-side) — exercises the
+  // getItinerary-specific fallback in openRealCartAndAttemptPayment
+  // (conversation.ts), a gap that used to fall through to the generic
+  // "system is slow, retry" path instead. Paired with a second,
+  // always-succeeding product for the automatic retry to find, same
+  // pattern as "unavailable" above.
+  broken_product_config: { productId: 9006, minDate: "2026-01-01", maxDate: "2027-12-31" },
 } as const;
 
 function findScenarioByKeyword(keyword: string | undefined): keyof typeof STUB_SCENARIOS | null {
@@ -228,13 +238,13 @@ export class HofjClient {
         maxDate: cfg.maxDate,
         defaultDurationInDays: 3,
       };
-      // "unavailable" always fails at createItinerary, even on its own
-      // minDate — pair it with the plain default product (ranked
-      // second) so the automatic retry search this triggers actually
-      // finds something, same as a real "original truly unbookable"
-      // recovery.
+      // "unavailable" and "broken_product_config" both end in this
+      // product being rejected and a retry search firing — pair each
+      // with the plain default product (ranked second) so that retry
+      // actually finds something, same as a real "original truly
+      // unbookable" recovery.
       const products =
-        scenario === "unavailable"
+        scenario === "unavailable" || scenario === "broken_product_config"
           ? [
               scenarioProduct,
               { ...scenarioProduct, productId: 1, title: "Stub Tennis Package (fallback)" },
@@ -268,6 +278,18 @@ export class HofjClient {
       const itineraryId = path.split("/")[3]!;
       const info = this.stubItineraries.get(itineraryId);
       await wait(70);
+      // "broken_product_config" reproduces a real, verified case
+      // (Giuseppe, 2026-09-15: productId 19 "M3 Padel Week") — the cart
+      // genuinely opened (createItinerary succeeded above), but THIS
+      // read fails every time, permanently, same shape as the real
+      // upstream ZodError.
+      if (info?.scenario === "broken_product_config") {
+        throw new HofjApiError(
+          502,
+          "ZodError: paymentOptionsConfiguration.installmentPlans[0].deposit — Too small: expected number to be >0 (stub)",
+          true,
+        );
+      }
       // "price_changed" reports a real total wildly different from what
       // search() advertised (250/person); everything else scales
       // consistently with the real party size recorded at
