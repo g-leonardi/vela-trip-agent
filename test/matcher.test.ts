@@ -232,7 +232,7 @@ describe("searchCandidates", () => {
     const padelInWeebora = product({ productId: 9, primaryDestination: "valencia", title: "Padel Clinic Valencia" });
     const hofj = fakeHofjClient({
       "terrarossa.com": [],
-      "weebora.com": [padelInWeebora],
+      "staging.weebora.com": [padelInWeebora], // matches FALLBACK_BRAND, matcher.ts
     });
     const { candidates, locationMatched } = await searchCandidates(hofj, {
       ...baseSlots,
@@ -295,7 +295,7 @@ describe("searchCandidates", () => {
   });
 
   it("does not fall back to Weebora for tennis", async () => {
-    const hofj = fakeHofjClient({ "terrarossa.com": [], "weebora.com": [product({ productId: 9 })] });
+    const hofj = fakeHofjClient({ "terrarossa.com": [], "staging.weebora.com": [product({ productId: 9 })] });
     const { candidates } = await searchCandidates(hofj, { ...baseSlots, sport: "tennis" });
     expect(candidates).toHaveLength(0);
   });

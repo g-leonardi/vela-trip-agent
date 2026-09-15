@@ -45,6 +45,15 @@ async function request(env: Env, path: string, params: Record<string, string>): 
   return json;
 }
 
+// Any valid HTTPS URL on our own domain works — Stripe never actually
+// redirects here for pm_card_visa (no 3D Secure/redirect-based method
+// involved, confirmed live: status comes back "succeeded" synchronously),
+// it's only required because HOFJ's own PaymentIntent has
+// automatic_payment_methods.allow_redirects enabled. Verified live
+// 2026-09-15 on staging.api.hofj.com: omitting this gets a 400 from
+// Stripe ("automatic_payment_methods... requires return_url").
+const RETURN_URL = "https://vela-trip-agent.gleonardi87.workers.dev/return";
+
 /** Confirms with Stripe's own official test card token. Deliberate demo
  * simplification, documented as such in ARCHITECTURE.md: a real
  * production flow hands the client_secret to the frontend for Stripe
@@ -56,5 +65,6 @@ async function request(env: Env, path: string, params: Record<string, string>): 
 export async function confirmPaymentIntent(env: Env, paymentIntentId: string): Promise<PaymentIntent> {
   return request(env, `/payment_intents/${paymentIntentId}/confirm`, {
     payment_method: "pm_card_visa",
+    return_url: RETURN_URL,
   });
 }

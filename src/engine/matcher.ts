@@ -270,7 +270,13 @@ function filterToMatchingCity<T extends SearchProduct>(slots: Slots, candidates:
   return matching;
 }
 
-const FALLBACK_BRAND = "weebora.com";
+// Corrected 2026-09-15: HOFJ_BASE_URL was pointed at production all
+// session — the correct environment is staging.api.hofj.com, with its
+// own brand domains (verified live via GET /v1/distribution-channels,
+// not guessed). Weebora's staging domain is exactly this; Terrarossa's
+// is the surprising one ("staging.tennis.weebora.com" — see HOFJ_BRAND,
+// wrangler.jsonc). See ARCHITECTURE.md.
+const FALLBACK_BRAND = "staging.weebora.com";
 
 /** Raw search for one brand: tries a preferences-enriched keyword first,
  * falls back to city+sport alone if that returns nothing. No city

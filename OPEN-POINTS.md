@@ -3,6 +3,36 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## CORREZIONE MAGGIORE: ambiente sbagliato per tutta la sessione — è staging.api.hofj.com, non produzione (2026-09-15)
+
+Carlo, sul blocco Stripe Connect (vedi sotto), ha chiesto "stai
+puntando a staging corretto?". Verificato dal vivo, non dato per
+scontato: `api.hofj.com` è produzione, l'ambiente giusto per QA/partner
+integration è **`staging.api.hofj.com`** — la nostra chiave funziona lì
+(quota quasi intatta, mai davvero usata). I brand su staging sono
+diversi (verificato via `GET /v1/distribution-channels`, non
+indovinato): Weebora → `staging.weebora.com`, **Terrarossa →
+`staging.tennis.weebora.com`** (non l'ovvio `staging.terrarossa.com`).
+
+**Rifatto il test di pagamento su staging**: questa volta riuscito per
+davvero (`status: "succeeded"`) — il blocco precedente non era un
+permesso Stripe Connect mancante, era la chiave/ambiente sbagliati.
+Trovato anche un dettaglio tecnico reale: serve un `return_url`
+esplicito nella conferma Stripe (HOFJ usa `automatic_payment_methods`),
+altrimenti 400.
+
+**Ancora aperto, verificato onestamente**: anche con pagamento riuscito
+e booking confermato con successo, `checkout.status` resta
+"BookingInitiated" — controllato subito e dopo 8s, nessun cambiamento.
+Non dichiarato risolto.
+
+Aggiornato `wrangler.jsonc` (URL + brand), `engine/matcher.ts`
+(FALLBACK_BRAND + 2 test), `stripe/client.ts` (return_url), `types.ts`
+(doc). Typecheck e i 60 test passano. Non verificato end-to-end via
+conversazione reale (Workers AI locale senza quota) — solo via chiamate
+dirette identiche a quelle del codice. Dettaglio completo in
+`ARCHITECTURE.md`.
+
 ## Il prezzo che raddoppia — spiegato, non più un mistero (2026-09-15 ~00:20, sessionId `04022cc9-...`)
 
 Giuseppe aveva notato il pattern e chiesto se fosse legato al numero di

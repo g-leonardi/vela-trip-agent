@@ -188,8 +188,10 @@ export interface Candidate {
   maxDate: string;
   durationDays: number;
   /** Which HOFJ brand this product was actually found under (e.g.
-   * "terrarossa.com" or "weebora.com" — see engine/matcher.ts's padel
-   * fallback). Every downstream call that references this itinerary
+   * "staging.tennis.weebora.com" or "staging.weebora.com" — see
+   * engine/matcher.ts's padel fallback and wrangler.jsonc's HOFJ_BASE_URL
+   * doc for why these are staging domains, not "terrarossa.com"/
+   * "weebora.com"). Every downstream call that references this itinerary
    * (createItinerary, getItinerary, putCustomer, putPax, payment,
    * confirmBooking) MUST use this same brand — the API scopes products
    * and itineraries per brand, and a mismatch 404s. Regression found live

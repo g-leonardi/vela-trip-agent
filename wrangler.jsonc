@@ -31,8 +31,19 @@
     { "tag": "v4", "new_sqlite_classes": ["HofjQuotaGate"] }
   ],
   "vars": {
-    "HOFJ_BASE_URL": "https://api.hofj.com",
-    "HOFJ_BRAND": "terrarossa.com",
+    // Corrected 2026-09-15: api.hofj.com is HOFJ's PRODUCTION endpoint —
+    // the whole session had been pointed at it by mistake. The intended
+    // environment for partner integration/QA is staging.api.hofj.com,
+    // confirmed both by HOFJ's own docs and, live, by getPaymentIntent's
+    // client_secret actually confirming for real here (status:
+    // "succeeded") — the "resource_missing"/Stripe-permission error hit
+    // on production was really an account mismatch, not a missing
+    // connected_account_read permission. See ARCHITECTURE.md.
+    "HOFJ_BASE_URL": "https://staging.api.hofj.com",
+    // Brand domains differ on staging too (verified live via
+    // GET /v1/distribution-channels) — this is Terrarossa's real staging
+    // domain, NOT "staging.terrarossa.com".
+    "HOFJ_BRAND": "staging.tennis.weebora.com",
     "HOFJ_LOCALE": "it",
     // Buffer under HOFJ's real 120/min quota (verified live 2026-09-15) —
     // see hofj/quotaGate.ts and ARCHITECTURE.md's scalability twist

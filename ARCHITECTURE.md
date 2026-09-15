@@ -862,6 +862,76 @@ il permesso `connected_account_read`/`connected_account_write`
 abilitato, oppure serve l'id del connected account per usare l'header
 `Stripe-Account` lato nostro?
 
+### CORREZIONE MAGGIORE: puntavamo a produzione per tutta la sessione — l'ambiente giusto è staging.api.hofj.com (2026-09-15)
+
+Carlo, ricevendo la domanda sopra, ha risposto con una domanda a sua
+volta: "Stai puntando a staging corretto?". Verificato subito dal vivo,
+punto per punto, non dato per scontato:
+
+- `GET https://staging.api.hofj.com/v1/quota` risponde 200 con la
+  nostra chiave (`clientId: "test-developer"`, stesso limite 120/min ma
+  finestra quasi vuota — `usedInWindow: 1` — coerente con un ambiente
+  mai davvero usato finora, a differenza di produzione).
+- `GET /v1/distribution-channels` su staging restituisce i brand REALI,
+  diversi da quelli usati finora: **Weebora → `staging.weebora.com`**,
+  **Terrarossa → `staging.tennis.weebora.com`** (non
+  `staging.terrarossa.com`, il nome sorprende ma è quello verificato),
+  House of Journey → `staging.hofj.com`.
+- Rifatto l'intero test di pagamento dal vivo (sezione precedente) ma su
+  staging invece che produzione: creato un itinerary reale (prodotto
+  523, Forte dei Marmi Tennis Experience, brand
+  `staging.tennis.weebora.com`), ottenuto un nuovo `client_secret` da
+  `GET .../payment`, e confermato con la nostra chiave Stripe.
+  **Riuscito per davvero questa volta: `status: "succeeded"`.** L'errore
+  "resource_missing"/permesso Stripe Connect mancante trovato su
+  produzione non era un problema di permessi — era che la chiave e
+  l'ambiente HOFJ non erano lo stesso ambiente: su staging, con lo
+  stesso identico codice, il PaymentIntent di HOFJ è perfettamente
+  leggibile e confermabile dalla nostra chiave.
+- **Un dettaglio tecnico reale scoperto nello stesso test**: il
+  PaymentIntent di HOFJ ha `automatic_payment_methods.allow_redirects:
+  "always"` abilitato, quindi la chiamata di conferma a Stripe richiede
+  un `return_url` esplicito — senza, Stripe risponde 400. Non serve un
+  vero redirect (verificato: con `pm_card_visa` la conferma è sincrona,
+  nessun redirect avviene davvero), basta un URL valido sul nostro
+  dominio. Aggiunto (`stripe/client.ts`, `RETURN_URL`).
+- **Non risolto, verificato onestamente, non dato per scontato**: anche
+  con pagamento nativo confermato per davvero (`succeeded`) e
+  `POST /v1/bookings` chiamato con successo, `checkout.status`
+  sull'itinerary **resta `"BookingInitiated"`** — controllato subito
+  dopo e di nuovo dopo 8 secondi di attesa, nessun cambiamento. `GET
+  /v1/bookings/{id}` continua a rispondere 401 con la nostra chiave B2B
+  anche su staging (stesso comportamento di produzione — non è
+  specifico all'ambiente sbagliato). Resta un punto aperto reale, non
+  chiuso da questa correzione: o serve più tempo di propagazione, o
+  `checkout.status` non è il segnale giusto da controllare (potrebbe
+  essere un attributo del carrello, non della prenotazione confermata).
+  Non lo dichiariamo risolto.
+
+**Cambiato in codice, con quanto verificato qui, non con supposizioni**:
+`wrangler.jsonc` (`HOFJ_BASE_URL` → `staging.api.hofj.com`, `HOFJ_BRAND`
+→ `staging.tennis.weebora.com`), `engine/matcher.ts`
+(`FALLBACK_BRAND` → `staging.weebora.com`, più i due test in
+`matcher.test.ts` che referenziavano la stringa vecchia), `types.ts`
+(doc comment di `Candidate.brand` aggiornato), `stripe/client.ts`
+(`return_url` esplicito in `confirmPaymentIntent`). Typecheck e i 60
+test unitari passano. **Limite onesto di questa verifica**: non sono
+riuscito a far girare il flusso end-to-end attraverso una vera
+conversazione (Workers AI ha esaurito la quota gratuita giornaliera in
+locale, nessun fallback Anthropic configurato in `.dev.vars`) — la
+verifica è stata fatta chiamando `HofjClient`/`stripe/client.ts` con gli
+stessi identici parametri che il codice reale usa (stessi path, stesso
+body), non un test end-to-end via HTTP `/api/message`. Un run reale
+tramite conversazione (o un deploy) resta da fare per la chiusura
+definitiva.
+
+Nota di metodo, non trascurabile: il messaggio originale da cui è
+partita questa correzione (dalla sessione privata) era arrivato
+danneggiato nel copia-incolla (parole fuse, righe troncate) — le
+stringhe esatte dei brand e i dettagli tecnici non sono stati presi per
+buoni dal testo corrotto, ma riverificati uno per uno con chiamate
+dirette prima di toccare codice o documentazione.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua
