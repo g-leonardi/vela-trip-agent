@@ -80,6 +80,11 @@ describe("resolveDate", () => {
     expect(resolveDate("15 to 21 September", NOW)).toBe("2026-09-15");
     expect(resolveDate("15th to 21st September 2027", NOW)).toBe("2027-09-15");
   });
+
+  it("also recognizes 'del X al Y [month]' (regression, found live by Giuseppe 2026-09-15, sessionId 60ff320a-...: 'il periodo del 16 al 22 settembre' hit the exact same bug a second time — 'del' wasn't covered by the 'dal'-only fix above)", () => {
+    expect(resolveDate("il periodo del 16 al 22 settembre", NOW)).toBe("2026-09-16");
+    expect(resolveDate("del 16 al 22 settembre", NOW)).toBe("2026-09-16");
+  });
 });
 
 describe("extractMonthHint", () => {

@@ -96,8 +96,19 @@ export function resolveDate(raw: string | null, now: Date = new Date()): string 
   // Tried first, before the generic single-day pattern, so a range phrase
   // always keeps its own first number as the day regardless of which one
   // ends up textually next to the month name.
+  //
+  // "(del|dal)" — verified live 2026-09-15 (sessionId
+  // `60ff320a-...`): "il periodo DEL 16 al 22 settembre" hit this exact
+  // same bug a second time — "del" ("of the period") is just as natural
+  // as "dal" ("from") here and wasn't covered, so the phrase fell
+  // through to the generic pattern below and again picked the wrong end
+  // (22, not 16). This is exactly why the traveller saw a late,
+  // confusing date renegotiation after already giving personal data:
+  // the wrong day silently "matched" the wide availability window shown
+  // at proposal time, only failing for real once the cart actually
+  // opened for that specific (wrong) day.
   const itRange = text.match(
-    new RegExp(`dal\\s+(\\d{1,2})\\s*(?:°|º)?\\s*al\\s+\\d{1,2}\\s*(?:°|º)?\\s*(?:di\\s+|d['’]\\s*)?(${MONTH_NAMES_PATTERN})(?:\\s+(\\d{4}))?`),
+    new RegExp(`d(?:al|el)\\s+(\\d{1,2})\\s*(?:°|º)?\\s*al\\s+\\d{1,2}\\s*(?:°|º)?\\s*(?:di\\s+|d['’]\\s*)?(${MONTH_NAMES_PATTERN})(?:\\s+(\\d{4}))?`),
   );
   const enRange = text.match(
     new RegExp(`(\\d{1,2})\\s*(?:st|nd|rd|th)?\\s*to\\s+\\d{1,2}\\s*(?:st|nd|rd|th)?\\s+(${MONTH_NAMES_PATTERN})(?:,?\\s+(\\d{4}))?`),

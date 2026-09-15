@@ -38,7 +38,20 @@ const BOOKING_RETRY_LIMIT = 2;
 
 function initialState(): ConversationState {
   return {
-    stage: "collecting",
+    // Traveller data is collected FIRST, before any trip talk — decision
+    // by Giuseppe, 2026-09-15, after watching a live session where every
+    // "surprise" (date not really available, price changed) only
+    // surfaced AFTER the traveller had already spent several turns
+    // giving their name/email/phone, right after already accepting a
+    // proposal. Collecting known-in-advance data up front, once, means
+    // by the time a proposal is accepted there's nothing left to ask —
+    // openRealCartAndAttemptPayment runs immediately (see runProposing's
+    // "yes" branch), so any real-cart surprise now lands right after the
+    // "sì, procedi", not several turns of sunk-cost effort later. Still
+    // skips whatever a saved profile already knows (see
+    // REQUIRED_TRAVELLER_FIELDS / runCollectingTraveller) — never
+    // re-asks what's already on file.
+    stage: "collecting_traveller",
     language: null,
     slots: { ...EMPTY_SLOTS },
     // Starts empty — a real, persistent UserProfile (see types.ts,
@@ -216,10 +229,21 @@ export class ConversationDO extends DurableObject<Env> {
       // slots.city == "Lecco"). Prompt instructions alone aren't a
       // reliable enough guard for something this consequential — the trip
       // is only ever open for renegotiation during "collecting"/
-      // "proposing"; past that point it's locked, so slotUpdates (except
+      // "proposing", OR during "collecting_traveller" when nothing has
+      // been proposed yet (the new conversation-opening phase, see
+      // initialState()'s doc — a traveller who volunteers trip details
+      // while still being asked their name should have them captured,
+      // not dropped only to be asked again a few turns later). Once a
+      // proposal exists it's locked, so slotUpdates (except
       // dateFromVague bookkeeping) simply isn't applied at all, regardless
-      // of what the model returned.
-      const tripStillNegotiable = state.stage === "collecting" || state.stage === "proposing";
+      // of what the model returned — this is what still protects a
+      // decided trip during the OTHER time collecting_traveller can
+      // happen: re-collecting data reset by a putCustomer/putPax
+      // validation error mid-booking (see the `correction` branch below).
+      const tripStillNegotiable =
+        state.stage === "collecting" ||
+        state.stage === "proposing" ||
+        (state.stage === "collecting_traveller" && state.proposal === null);
       if (tripStillNegotiable) {
         const resolvedDates: Partial<Slots> = {};
         if (typeof dateFromText === "string") resolvedDates.dateFrom = resolveDate(dateFromText);
@@ -337,12 +361,22 @@ export class ConversationDO extends DurableObject<Env> {
       return "se conferma o rifiuta la proposta di viaggio appena fatta";
     }
     if (state.stage === "collecting_traveller") {
+      // The "NON la destinazione, quella è già decisa" caveat only makes
+      // sense once a trip is actually decided (state.proposal set) or at
+      // least discussed (slots.city given) — collecting_traveller now
+      // also runs at the very START of a conversation (see
+      // initialState()'s doc), before any destination exists to confuse
+      // this with, so stating the caveat there would be actively
+      // confusing (there's nothing "already decided" yet).
+      const destinationDecided = state.proposal !== null || state.slots.city !== null;
       const labels: Partial<Record<keyof TravellerInfo, string>> = {
         firstName: "il nome del viaggiatore",
         lastName: "il cognome del viaggiatore",
         email: "l'email del viaggiatore",
         phone: "il telefono del viaggiatore",
-        city: "la città DI RESIDENZA del viaggiatore, per l'indirizzo di fatturazione — NON la destinazione del viaggio, quella è già decisa",
+        city: destinationDecided
+          ? "la città DI RESIDENZA del viaggiatore, per l'indirizzo di fatturazione — NON la destinazione del viaggio, quella è già decisa"
+          : "la città DI RESIDENZA del viaggiatore, per l'indirizzo di fatturazione (il viaggio non è stato ancora discusso, quindi qui non c'è nessuna destinazione con cui confonderla)",
       };
       const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
       return missing ? (labels[missing] ?? missing) : null;
@@ -548,11 +582,22 @@ export class ConversationDO extends DurableObject<Env> {
         state.slots.dateFrom = state.proposal.candidate.minDate;
         state.slots.dateFromVague = null;
       }
-      state.stage = "collecting_traveller";
-      // Traveller info may already be filled from an earlier attempt (e.g.
-      // a price-changed re-confirmation loop) — don't re-ask what we
-      // already have, go straight to opening the cart if it's complete.
-      return this.runCollectingTraveller(state);
+      // Traveller data is collected up front now (see initialState()'s
+      // doc) — by the time a proposal is accepted it's already complete
+      // in the common case, so go straight to opening the real cart
+      // instead of a separate post-proposal data-collection stage. Any
+      // real surprise (date not really bookable, price different) now
+      // lands right here, immediately after "sì, procedi" — not several
+      // turns of already-sunk personal-data effort later (regression,
+      // live session `60ff320a-...`: exactly that late-surprise pattern
+      // is what prompted this reorder). Defensive fallback for the rare
+      // case traveller data somehow still isn't complete.
+      const missingTraveller = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
+      if (missingTraveller) {
+        state.stage = "collecting_traveller";
+        return this.runCollectingTraveller(state);
+      }
+      return this.openRealCartAndAttemptPayment(state);
     }
     if (decision === "no" && state.proposal) {
       state.rejectedProductIds.push(state.proposal.candidate.productId);
@@ -567,10 +612,28 @@ export class ConversationDO extends DurableObject<Env> {
   private async runCollectingTraveller(state: ConversationState): Promise<string> {
     const missing = REQUIRED_TRAVELLER_FIELDS.find((f) => state.traveller[f] === null);
     if (missing) {
-      const isFirstAsk = REQUIRED_TRAVELLER_FIELDS.every((f) => state.traveller[f] === null);
+      // Whether this is literally the first thing said in the whole
+      // conversation — computed from message count, not "are all
+      // traveller fields still null", because a returning traveller's
+      // profile can pre-fill some of them (see handleMessage's profile
+      // seeding) and still have this be the very first question asked.
+      // Only the traveller's own opening message exists at this point
+      // (the agent's reply to it hasn't been pushed yet), hence <= 1.
+      const isFirstAsk = state.messages.length <= 1;
       return this.say(state, { kind: "ask_traveller_field", field: missing, isFirstAsk });
     }
-    return this.openRealCartAndAttemptPayment(state);
+    // Traveller data just became complete. Two reasons this method can
+    // be reached: (1) the very start of a fresh conversation (see
+    // initialState()'s doc) — nothing decided yet, move on to the trip
+    // itself; (2) resuming after a putCustomer/putPax validation error
+    // wiped it mid-booking (see the `correction` branch below) — a
+    // proposal is already accepted, so resume opening the real cart
+    // instead of restarting trip negotiation from scratch.
+    if (state.proposal) {
+      return this.openRealCartAndAttemptPayment(state);
+    }
+    state.stage = "collecting";
+    return this.runCollecting(state);
   }
 
   /** The real, money-real part of the pipeline: opens an actual HOFJ cart,
@@ -649,7 +712,17 @@ export class ConversationDO extends DurableObject<Env> {
           category: "compromise",
           compromise: { kind: "date", requested: requestedDate, offered: candidate.minDate },
         };
-        return this.say(state, { kind: "propose", ctx: state.proposal, adults: state.slots.adults! });
+        // Same candidate/productId, only the date shifts — a dedicated
+        // directive (not the generic "propose") so this reads as an
+        // adjustment to the already-chosen package, never as a fresh
+        // pitch that could be mistaken for a different one (regression,
+        // live 2026-09-15, session `60ff320a-...` — see ARCHITECTURE.md).
+        return this.say(state, {
+          kind: "date_shift_confirm",
+          ctx: state.proposal,
+          requestedDate,
+          offeredDate: candidate.minDate,
+        });
       }
       // Already on the candidate's own known-good minDate and it *still*
       // failed: this isn't a date problem, and retrying (the generic

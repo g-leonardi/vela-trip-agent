@@ -230,6 +230,22 @@ export type SayDirective =
     }
   | { kind: "reverifying" }
   | {
+      /** The candidate's originally-requested date turned out not to be a
+       * real bookable slot when the cart actually opened — same product,
+       * only the date shifts. A DIFFERENT directive from "propose"
+       * (which is also used when a genuinely different product is being
+       * pitched fresh) specifically so the traveller is never left
+       * wondering "wait, is this a different package now?" — verified
+       * live 2026-09-15 (Giuseppe, session `60ff320a-...`): re-using the
+       * full "propose" pitch for this case read exactly like a new
+       * package being offered, even though candidate.productId never
+       * changed. See ARCHITECTURE.md. */
+      kind: "date_shift_confirm";
+      ctx: ProposalContext;
+      requestedDate: string;
+      offeredDate: string;
+    }
+  | {
       kind: "price_changed";
       oldPrice: string;
       newPrice: string;
@@ -346,12 +362,19 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
         return `Uno dei dati che il viaggiatore ha dato prima non è stato accettato dal sistema del fornitore (probabilmente un formato non valido). Scusati in breve, spiega che devi ricontrollare i suoi dati da capo, poi chiedi ${labels[d.field] ?? d.field}. Una frase, tono comprensivo, non colpevolizzante.`;
       }
       if (d.isFirstAsk) {
-        return `Spiega in una frase breve che per bloccare la prenotazione reale ti servono un paio di dati, poi chiedi ${labels[d.field] ?? d.field}. Questa è la prima volta che lo dici in questa conversazione.`;
+        // This is now genuinely the OPENING line of the conversation
+        // (traveller data is collected before any trip talk — see
+        // initialState()'s doc, conversation.ts) — never frame it as
+        // "per bloccare la prenotazione", nessuna prenotazione è stata
+        // ancora discussa a questo punto.
+        return `Questo è il primissimo messaggio di questa conversazione. Apri in modo naturale e breve, come un agente che risponde al telefono e chiede subito con chi sta parlando — NON menzionare ancora viaggi, sport, destinazioni o prenotazioni, arriveranno dopo. Chiedi solo ${labels[d.field] ?? d.field}.`;
       }
       return `Chiedi ${labels[d.field] ?? d.field} in modo naturale e diretto, come continueresti una conversazione già avviata — NON ripetere che ti servono i dati per la prenotazione, l'hai già detto poco fa. Una frase breve, formulata diversamente dalle domande precedenti.`;
     }
     case "reverifying":
       return `Di' in una frase breve che stai ricontrollando prezzo e disponibilità reali prima di chiudere, perché l'inventario è condiviso e potrebbe essere cambiato nel frattempo. Tono rassicurante.`;
+    case "date_shift_confirm":
+      return `È LO STESSO identico pacchetto già scelto poco fa ("${d.ctx.candidate.title}") — NON ripresentarlo da zero, NON ripetere prezzo/venue/durata come se fosse un'offerta nuova, il viaggiatore lo riconoscerebbe come un pacchetto diverso e si confonderebbe. Di' solo, in una frase breve, che quella data specifica (${d.requestedDate}) non è realmente disponibile per QUEL pacchetto, ma la prima data vera è ${d.offeredDate} — chiedi conferma per procedere con quella data, sullo stesso pacchetto di prima.`;
     case "price_changed":
       return d.reason
         ? `Il prezzo reale è diverso da quello mostrato prima: era ${d.oldPrice}, ora è ${d.newPrice}. Il motivo vero, verificato: ${d.reason}. Spiegalo con questa esatta ragione, in una frase naturale — non è un rincaro a sorpresa né "il mercato è dinamico", è il calcolo giusto per la richiesta fatta. Poi chiedi se vuole procedere al prezzo reale.`

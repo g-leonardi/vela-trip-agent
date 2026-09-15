@@ -932,6 +932,107 @@ stringhe esatte dei brand e i dettagli tecnici non sono stati presi per
 buoni dal testo corrotto, ma riverificati uno per uno con chiamate
 dirette prima di toccare codice o documentazione.
 
+### Analisi di una sessione reale (`60ff320a-...`, deploy live) e tre correzioni per una conversazione più fluida (2026-09-15)
+
+Giuseppe ha fatto un vero test sul deploy appena aggiornato e ha chiesto
+un'analisi della sessione per capire dove l'esperienza si è inceppata.
+Ricostruita l'intera trascrizione dallo stato reale (`/api/state`), non
+per sentito dire — tre problemi reali, distinti, ognuno con causa
+verificata prima di toccare codice.
+
+**1. Bug concreto e riproducibile: "il periodo DEL 16 al 22 settembre"
+risolveva la data sbagliata.** Un regression fix di ieri copriva già
+"dal 15 al 21 settembre" (vedi sezione precedente sui bug di parsing
+date) — ma "del" (altrettanto naturale: "il periodo del 16 al 22") non
+era coperto, perché il pattern era ancorato letteralmente alla parola
+"dal". Verificato girando la regex reale del codice su "periodo del 16
+al 22 settembre": zero match sul pattern range, caduta nel pattern
+generico, che prende "22 settembre" (il numero adiacente al mese) invece
+di "16". Questo spiega l'intera catena osservata: la prima proposta non
+segnala alcun compromesso di data (22 rientra comunque nella finestra
+ampia mostrata dalla ricerca), e solo quando il carrello si apre
+DAVVERO per il 22 si scopre che quello slot preciso non è prenotabile —
+innescando una rinegoziazione tardiva, proprio dopo che il viaggiatore
+aveva già dato cognome e telefono. **Corretto**: il pattern ora accetta
+sia "dal" sia "del" (`d(?:al|el)`). Test aggiunto (`dates.test.ts`) con
+la frase esatta di questa sessione.
+
+**2. Riordinato il flusso: i dati del viaggiatore si raccolgono
+SEMPRE all'inizio della conversazione, mai dopo.** Decisione di
+Giuseppe dopo aver visto dal vivo il costo reale del vecchio ordine: in
+quella sessione, OGNI sorpresa (rinegoziazione data, prezzo cambiato da
+578€ a 1040€, reset completo dei dati dopo un 400) arrivava DOPO che il
+viaggiatore aveva già speso 3-4 turni a dare nome/cognome/telefono —
+il momento peggiore possibile per una brutta notizia. Cambiato:
+`initialState()` parte ora da `stage: "collecting_traveller"` invece di
+`"collecting"` — i dati del viaggiatore (quelli mancanti, mai quelli già
+noti da un profilo salvato) si chiedono per primi, prima ancora di
+parlare del viaggio. Quando la proposta viene accettata (`runProposing`,
+decisione "yes"), i dati sono ormai già completi nel caso comune, quindi
+si passa DIRETTAMENTE all'apertura del carrello reale — qualunque
+sorpresa (data non prenotabile, prezzo diverso) arriva subito dopo il
+"sì, procedi", non dopo un altro giro di raccolta dati già sudata.
+Dettagli tecnici sistemati di conseguenza: il gate `tripStillNegotiable`
+ora accetta anche `collecting_traveller` quando nessuna proposta esiste
+ancora (altrimenti i dettagli del viaggio detti spontaneamente
+all'inizio andrebbero persi); l'etichetta del campo "città di residenza"
+non menziona più "la destinazione è già decisa" quando non c'è ancora
+nessuna destinazione con cui confondersi; `isFirstAsk` (la prima
+domanda mai fatta) è ora calcolato sul numero di messaggi scambiati, non
+su "tutti i campi sono null" — un viaggiatore di ritorno con profilo
+parziale deve comunque sentirsi accogliere in modo naturale alla prima
+vera domanda, non con una frase che presuppone una prenotazione già in
+corso ("per bloccare la prenotazione reale...", rimossa). Verificato dal
+vivo (stub server): la stessa conversazione ora collassa correttamente
+in meno turni quando i dati sono già tutti noti, senza un secondo giro
+di richieste dopo l'accettazione della proposta.
+
+**3. "Mi sembra che il sistema abbia cambiato pacchetto" — verificato:
+NO, ma il messaggio lo faceva sembrare così.** Controllato
+`productId` in tutta la trascrizione: `181` ("Magnifico Padel a
+Lanzarote") dall'inizio alla fine, mai cambiato. Il problema era di
+messaggistica: quando il carrello reale scopre che la data accettata non
+è davvero prenotabile e ripropone lo STESSO candidato con una data
+diversa, il codice riusava la direttiva generica `"propose"` — la
+stessa usata per presentare un pacchetto nuovo da zero — ripetendo
+titolo/venue/prezzo come se fosse un'offerta diversa. Aggiunta una
+direttiva dedicata, `date_shift_confirm` (`engine/ai.ts`), usata SOLO in
+questo caso specifico: dice esplicitamente "è lo stesso pacchetto di
+prima", non ripete la scheda completa, chiede conferma solo sulla data.
+Il caso INVERSO — il pacchetto originale risulta davvero non
+prenotabile e se ne propone un altro — aveva già la disclosure giusta
+("il pacchetto proposto prima non risulta più prenotabile... diglielo
+in breve"), confermato leggendo il codice, nessuna modifica necessaria
+lì: il sistema insiste già sul pacchetto scelto fino a quando non è
+genuinamente impossibile, e avvisa chiaramente solo quando cambia
+davvero.
+
+**Perimetro dichiarato: multi-lingua, oggi solo IT/EN, senza libreria
+esterna.** Su richiesta esplicita di Giuseppe: il supporto multi-lingua
+di questo prototipo copre solo italiano e inglese, con regex
+deterministiche scritte a mano in `engine/dates.ts` (niente libreria di
+parsing date esterna, come `date-fns`/`chrono-node` — mai valutata,
+scelta consapevole per restare dentro il perimetro di tempo/dipendenze
+della challenge). Aggiungere una terza lingua oggi significa aggiungere
+a mano i pattern regex equivalenti (mesi, "dal/del X al Y", "tra N
+giorni", ecc.) in quel file — non è plug-and-play. Se il prodotto dovesse
+davvero espandersi oltre IT/EN, la libreria esterna diventerebbe la
+scelta giusta; per ora, con solo due lingue verificate in produzione,
+tenere la logica deterministica e testabile in casa resta la scelta più
+semplice, coerente con lo split "logica in codice, l'AI solo fraseggia"
+che regge tutto il resto del progetto.
+
+**Perimetro dichiarato: nessun DB di preferenze/profilazione utente,
+oggi.** `UserProfileDO` (vedi `userProfile.ts`) è la versione ATTUALE,
+volutamente minimale, di questa idea: firstName/email/città di
+residenza/sport preferito/dimensione nucleo/tier economico, una sola
+Durable Object per utente, mai usata per decisioni silenziose (solo
+suggerimenti da confermare, vedi la precision policy). Giuseppe ha
+confermato che l'evoluzione naturale è un vero database di preferenze e
+profilazione più ricco — non costruito in questa fase, notato qui
+esplicitamente perché non sia scambiato per una dimenticanza quando si
+guarderà indietro a questo prototipo.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

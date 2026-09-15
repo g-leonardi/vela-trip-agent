@@ -3,6 +3,42 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Fluidità della conversazione: 3 fix da una sessione reale sul deploy (`60ff320a-...`, 2026-09-15)
+
+1. **Bug data confermato e corretto**: "il periodo **del** 16 al 22
+   settembre" risolveva a 22, non 16 — stessa causa del bug "dal 15 al
+   21" già corretto ieri, ma "del" non era coperto dal pattern. Fix in
+   `dates.ts` (`d(?:al|el)`), test aggiunto con la frase esatta.
+2. **Riordinato il flusso**: dati del viaggiatore raccolti SEMPRE
+   all'inizio (se mancanti — mai richiesti se già noti da profilo), non
+   più dopo la proposta accettata. Motivo: nella sessione reale, ogni
+   sorpresa (data non prenotabile, prezzo quasi raddoppiato) arrivava
+   dopo che il viaggiatore aveva già dato 3-4 dati personali — il
+   momento peggiore. Ora, appena la proposta è accettata, si va dritti
+   al carrello reale (dati già pronti) — le sorprese arrivano subito,
+   non dopo altro sforzo sprecato. Vedi `ARCHITECTURE.md` per i dettagli
+   tecnici (gate `tripStillNegotiable`, `isFirstAsk`, etichetta città).
+3. **"Il pacchetto è cambiato?" — verificato: no, mai** (`productId`
+   181 dall'inizio alla fine), ma il messaggio di rinegoziazione data
+   riusava la pitch completa come se fosse un'offerta nuova. Nuova
+   direttiva dedicata `date_shift_confirm` che dice esplicitamente
+   "stesso pacchetto, solo la data cambia". Il caso di un cambio
+   pacchetto VERO (originale davvero non prenotabile) aveva già la
+   disclosure corretta, verificato leggendo il codice — nessuna
+   modifica necessaria lì.
+
+**Perimetro dichiarato, su richiesta esplicita di Giuseppe**: multi-lingua
+solo IT/EN, regex scritte a mano, nessuna libreria esterna (scelta
+consapevole, non provvisoria per mancanza di tempo — da rivalutare solo
+se si aggiunge davvero una terza lingua). Un vero DB di
+preferenze/profilazione utente (oltre l'attuale `UserProfileDO`
+minimale) è l'evoluzione naturale ma non costruita in questa fase —
+notato esplicitamente per non essere scambiato per una dimenticanza.
+
+Typecheck e 61 test passano (60 + il nuovo test per "del"). Verificato
+dal vivo via stub server che il nuovo ordine funziona end-to-end senza
+errori strutturali.
+
 ## CORREZIONE MAGGIORE: ambiente sbagliato per tutta la sessione — è staging.api.hofj.com, non produzione (2026-09-15)
 
 Carlo, sul blocco Stripe Connect (vedi sotto), ha chiesto "stai
