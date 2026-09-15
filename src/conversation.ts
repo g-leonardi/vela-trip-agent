@@ -136,7 +136,17 @@ export class ConversationDO extends DurableObject<Env> {
 
   private async loadState(): Promise<ConversationState> {
     const stored = await this.ctx.storage.get<ConversationState>("state");
-    return stored ?? initialState();
+    if (!stored) return initialState();
+    // ConversationState's shape has grown more than once this session
+    // (budgetTierFromProfileDefault, pastBookings, lastDateOverlapWarning —
+    // all added 2026-09-15) — a DO whose state was persisted BEFORE a field
+    // existed keeps that old, narrower shape forever; `stored` alone is
+    // missing it entirely, not just null. Verified live: a real session
+    // from earlier today hit exactly this, `state.pastBookings.push(...)`
+    // on `undefined` — a genuine 500 (Cloudflare error 1101), not a
+    // hypothetical. initialState()'s own defaults fill every gap; real
+    // persisted values always win over them.
+    return { ...initialState(), ...stored };
   }
 
   private async saveState(state: ConversationState): Promise<void> {
