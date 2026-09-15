@@ -494,6 +494,71 @@ errore nei log; due "riprova" consecutivi → `bookingRetryCount` sale a 2;
 un terzo tentativo → messaggio finale onesto con l'importo pagato e il
 riferimento dell'itinerary, invece di un ennesimo "riprova" vuoto.
 
+### Il prezzo mostrato subito come stima per la comitiva, e una policy che chiude un gap reale trovato per strada (2026-09-15 ~02:15)
+
+Dopo aver capito insieme il meccanismo del raddoppio (sopra), Giuseppe ha
+detto l'ovvio passo successivo: "mi aspetto che venga dato il prezzo a
+persona e quando sto per pagare mi ricorda per quante persone sto
+prenotando." Implementato:
+
+- **La prima proposta ora dichiara subito** il prezzo a persona E una
+  stima del totale per la comitiva reale (`candidate.price × adults`),
+  esplicitamente marcata come stima, non come cifra già certa — la
+  ri-verifica reale all'apertura del carrello resta comunque il momento
+  in cui il prezzo diventa definitivo. `adults` è già noto ad ogni
+  proposta (mai bypassato, per la precision policy), quindi non serve
+  aspettare nulla.
+- **La ri-verifica silenziosa ora confronta il prezzo reale con QUESTA
+  STESSA stima**, non più con il prezzo grezzo di ricerca — altrimenti,
+  per un prodotto che scala esattamente come previsto, il viaggiatore si
+  sarebbe sentito dire "il prezzo è cambiato" una seconda volta per la
+  stessa identica cosa già dichiarata in apertura, una vera incoerenza
+  di comunicazione. Ora quello step scatta solo per uno scarto REALE e
+  ulteriore (es. un supplemento camera per una comitiva dispari), non
+  per il semplice moltiplicarsi atteso.
+
+**Un gap reale trovato mentre implementavo questo, non ipotizzato**:
+`classify()` confronta `slots.budget` (dichiarato dal viaggiatore)
+contro `candidate.price` (il prezzo di ricerca, verificato essere a
+persona) — ma fino a questo momento non era mai stato deciso, da nessuna
+parte nel codice o nella conversazione con Giuseppe, SE il budget
+dichiarato dal viaggiatore fosse inteso a persona o per l'intera
+comitiva. Nella sessione `04022cc9-...` (budget 500€, 2 persone, 365€ a
+persona) il sistema aveva classificato la proposta come "exact" — ma se
+il viaggiatore avesse inteso 500€ come budget TOTALE per la coppia, il
+prezzo reale (730€) lo avrebbe superato del 46%, un "exact" falso.
+Deliberatamente non corretto al volo moltiplicando `candidate.price` per
+`adults` dentro `classify()`: non avevamo (e non abbiamo tuttora)
+conferma che ogni prodotto del catalogo scali linearmente per persona
+allo stesso modo — un'assunzione sbagliata nella logica di matching
+deterministica avrebbe potuto introdurre un errore sistematico nella
+direzione opposta.
+
+**Risolto non con altro codice difensivo, ma con una decisione di
+prodotto di Giuseppe**: "il budget è considerato a persona. Se dico
+'budget 500' o 'budget 500 euro a persona' è lo stesso concetto." Questo
+chiude il gap alla radice, non con un'euristica: dato che sia
+`slots.budget` che `candidate.price` sono ora DEFINITI come la stessa
+identica unità di misura (a persona), il confronto che `classify()` fa
+è corretto per costruzione, senza bisogno di moltiplicare o indovinare
+nulla. **Implementato**: la regola è ora esplicita in `INTERPRET_SYSTEM`
+(un numero dato senza altra specifica è già a persona), la domanda sul
+budget lo chiede sempre esplicitamente ("a persona, non per il gruppo
+intero"), e se il viaggiatore dichiara chiaramente un totale di gruppo
+("700 euro in totale", "il nostro budget di coppia è 700") il sistema
+NON lo accetta come valore a persona — lo lascia non risolto e chiede
+esplicitamente la cifra a persona, invece di indovinare una divisione
+(esattamente "fai fare la domanda all'assistente in caso", come
+richiesto).
+
+Verificato dal vivo: "budget 500 euro, siamo in 2" su un prodotto a
+365€/persona → ora correttamente "exact" (500 ≥ 365, stesso confronto di
+prima ma finalmente tra grandezze comparabili), col messaggio che dice
+subito "365 euro a persona — quindi 730 euro complessivi per voi due".
+"il nostro budget di coppia è 700 euro in totale" → il sistema non
+accetta quel numero come budget a persona, richiede esplicitamente la
+cifra a testa invece di dividere per conto suo.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

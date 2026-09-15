@@ -107,6 +107,7 @@ Regole:
 - Includi in slotUpdates/travellerUpdates SOLO i campi che il messaggio cambia davvero; i campi non menzionati restano null.
 - "dateFromText"/"dateToText": copia LETTERALMENTE la frase di data così come l'ha detta il viaggiatore, NELLA LINGUA in cui l'ha detta (es. "il 25 settembre", "next weekend", "in three days") — NON tradurla, NON calcolare tu la data, non convertirla in formato ISO, non inventare l'anno: quello lo fa un altro modulo deterministico che riconosce sia italiano sia inglese.
 - "budget" e "adults" NON vanno MAI inventati o stimati, nemmeno quando sembra ovvio dal contesto — sono gli UNICI due campi che il viaggiatore deve dire esplicitamente (con un numero, o con "budgetTier" per il budget — vedi sotto), altrimenti vanno richiesti. Per "adults" conta le persone se il viaggiatore le nomina o implica chiaramente il numero ("io e mia moglie" = 2, "siamo in quattro" = 4, "da solo" = 1, "I'm going with Francesca" = 2) — ma se dice qualcosa di non numerabile ("tutta la famiglia", "un gruppo di amici" senza numero), lascia "adults" a null: verrà chiesto un numero preciso, non va indovinato.
+- "budget" è SEMPRE da intendersi A PERSONA (decisione esplicita di Giuseppe, 2026-09-15). Un numero dato senza altra specifica ("budget 500", "500 euro") ha ESATTAMENTE lo stesso significato di "500 euro a persona"/"500 a testa" — nessuna differenza, non chiedere conferma in questo caso. Se invece il viaggiatore specifica chiaramente che è un totale per TUTTO il gruppo insieme (es. "1000 in totale", "1000 per tutti e due", "il nostro budget di coppia è 1000", "1000 for the both of us") — un concetto diverso, non convertibile con sicurezza senza sapere già quante persone — lascia "budget" a null: verrà chiesta esplicitamente la cifra a persona invece di indovinare una divisione.
 - "budgetTier": il viaggiatore può rispondere alla domanda sul budget in modo qualitativo invece che con un numero — è una risposta vera, non un budget mancante. Espressioni come "economico", "il minimo", "niente di esagerato", "spendere poco", "cheap" → "low". Espressioni come "carino ma non troppo caro", "nella media", "niente di esagerato ma neanche il più economico", "nice, but not crazy expensive", "reasonable" → "mid" (NON "low": non sta chiedendo il più economico, sta chiedendo qualcosa di ragionevole). Espressioni come "il top", "il meglio", "senza badare a spese", "budget illimitato", "money is no object" → "high". Se il viaggiatore dà un numero, usa "budget" e lascia "budgetTier" a null (sono alternativi, non vanno riempiti entrambi). Se non dice né un numero né un giudizio qualitativo, lascia entrambi a null — NON inventare mai un numero specifico da un giudizio qualitativo.
 - "decision" riflette se il messaggio è un assenso (sì, va bene, procedi, perfetto, ok..., yes, sure, sounds good) o un rifiuto/richiesta di alternativa (no, troppo caro, un'altra città..., that's too expensive) rispetto a una proposta o domanda che potrebbe essere stata fatta. Se invece il viaggiatore sta facendo una DOMANDA informativa sulla proposta appena fatta (es. "cosa include il pacchetto?", "com'è l'hotel?", "posso cancellare?", "what's included?") — non un sì/no, una vera richiesta di sapere di più — usa "question". Se il messaggio non è nessuno di questi (es. sta solo dando un'informazione su un altro aspetto del viaggio), usa "unclear".
 - Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).
@@ -154,7 +155,21 @@ export type SayDirective =
        * ConversationState.householdSizeHint/economicTierHint, types.ts. */
       hint?: string;
     }
-  | { kind: "propose"; ctx: ProposalContext; precededBy?: "rejected" | "unavailable" }
+  | {
+      kind: "propose";
+      ctx: ProposalContext;
+      precededBy?: "rejected" | "unavailable";
+      /** Real party size, already known before any proposal is ever made
+       * (adults is never asked-then-bypassed — see the precision policy,
+       * ARCHITECTURE.md). Used to surface an upfront estimated total for
+       * the traveller's actual group size, not just candidate.price alone
+       * — verified live 2026-09-15 that candidate.price comes from
+       * search(), which never sends adults at all, so it reflects the
+       * package's own default occupancy, not necessarily the real total.
+       * Framed as an ESTIMATE, never a confirmed number — the real cart,
+       * opened only after confirmation, still re-verifies for real. */
+      adults: number;
+    }
   | {
       kind: "answer_proposal_question";
       question: string;
@@ -213,7 +228,7 @@ function directiveToInstruction(d: SayDirective): string {
         sport: "che sport vuole praticare (tennis o padel)",
         city: "in che città o zona vuole andare",
         dateFrom: "quando vuole partire",
-        budget: "qual è il budget indicativo",
+        budget: "qual è il budget indicativo A PERSONA (specifica che è a testa, non per il gruppo intero)",
         adults: "in quante persone viaggia",
       };
       if (d.hint) {
@@ -223,13 +238,28 @@ function directiveToInstruction(d: SayDirective): string {
     }
     case "propose": {
       const { candidate, category, compromise } = d.ctx;
+      const currencySuffix = candidate.currency === "EUR" ? "€" : " " + candidate.currency;
       const lead =
         d.precededBy === "rejected"
           ? "Il viaggiatore ha rifiutato la proposta precedente. Riconoscilo con una parola o due (non una frase intera a sé) e poi, nello stesso messaggio, "
           : d.precededBy === "unavailable"
             ? "Il pacchetto proposto prima non risulta più prenotabile per davvero (un problema del fornitore, non tuo). Diglielo in breve e poi, nello stesso messaggio, "
             : "";
-      const base = `${lead}Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${candidate.currency === "EUR" ? "€" : " " + candidate.currency}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.`;
+      // Verified live 2026-09-15 (Giuseppe, dopo aver notato il prezzo
+      // che raddoppiava): search() non manda mai `adults`, quindi
+      // candidate.price riflette l'occupazione di default del pacchetto,
+      // non necessariamente il totale reale per la comitiva. Dirlo già
+      // nella prima proposta — non solo dopo, quando il carrello si apre
+      // — così non c'è più un "il prezzo è raddoppiato" a sorpresa in un
+      // secondo momento: il viaggiatore sa già, da subito, per quante
+      // persone sta prenotando e quanto ci si aspetta di pagare in
+      // totale. Framed come STIMA, mai come cifra già certa — la
+      // ri-verifica reale all'apertura del carrello resta comunque.
+      const priceNote =
+        d.adults > 1
+          ? ` Il prezzo indicato (${candidate.price}${currencySuffix}) è a persona/per l'occupazione base del pacchetto — per la vostra comitiva di ${d.adults} persone il totale STIMATO è ${candidate.price * d.adults}${currencySuffix} (te lo confermo per certo solo quando apro davvero la prenotazione). Menziona ENTRAMBI i numeri con naturalezza, non solo il prezzo a persona.`
+          : "";
+      const base = `${lead}Proponi ESATTAMENTE questo pacchetto, uno solo: "${candidate.title}" a ${candidate.venue}, ${candidate.city}, prezzo ${candidate.price}${currencySuffix}, ${candidate.durationDays} giorni, disponibile tra ${candidate.minDate} e ${candidate.maxDate}.${priceNote}`;
       if (category === "exact") return `${base} Corrisponde esattamente a quanto chiesto. Chiedi conferma per procedere.`;
       const c = compromise!;
       if (c.kind === "date_unspecified") {
@@ -242,7 +272,7 @@ function directiveToInstruction(d: SayDirective): string {
       if (c.kind === "budget_unspecified") {
         return `${base} Il viaggiatore non ti ha mai detto un budget. Diglielo con naturalezza — non è un problema, hai scelto tu il pacchetto più economico tra quelli pertinenti, a ${c.offered} — e chiedi conferma o se preferisce dirti un budget preciso.`;
       }
-      return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
+      return `${base} ATTENZIONE: c'è uno scostamento su ${c.kind === "price" ? "prezzo" : "data"} — il viaggiatore voleva ${c.requested}, tu puoi offrire ${c.offered}${c.kind === "price" ? " (entrambe le cifre sono A PERSONA, come il suo budget dichiarato)" : ""}. Dillo chiaramente nello stile "non riesco a ${c.requested}, riesco a ${c.offered}, procedo?" e chiedi conferma esplicita.`;
     }
     case "answer_proposal_question": {
       const { candidate } = d.ctx;

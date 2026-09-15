@@ -15,6 +15,34 @@ nostra. **Corretto**: quando il rapporto combacia con `adults`, diciamo
 al modello la ragione vera; quando non la sappiamo, gli diciamo
 esplicitamente di non inventarne una. Vedi `ARCHITECTURE.md`.
 
+## Prezzo mostrato subito come stima per la comitiva + il budget è ufficialmente "a persona" (2026-09-15 ~02:15)
+
+Giuseppe: "mi aspetto che venga dato il prezzo a persona e quando sto
+per pagare mi ricorda per quante persone sto prenotando." Implementato:
+la prima proposta ora dice il prezzo a persona E una stima del totale
+per la comitiva reale (marcata come stima, non definitiva); la
+ri-verifica silenziosa confronta il prezzo reale con QUESTA stima
+(non più col prezzo grezzo di ricerca), così non c'è più un "il prezzo
+è cambiato" ridondante per qualcosa già dichiarato in apertura.
+
+**Gap reale trovato implementando questo**: `classify()` confrontava
+`slots.budget` con `candidate.price` senza che fosse mai stato deciso
+se il budget dichiarato fosse a persona o per l'intera comitiva — nella
+sessione `04022cc9-...` (budget 500€, 2 persone, 365€/persona) il
+sistema diceva "exact" ma se il budget fosse stato inteso come totale
+di coppia, il prezzo reale (730€) lo avrebbe superato del 46%.
+Deliberatamente non corretto moltiplicando dentro `classify()` — nessuna
+controprova che vale per tutto il catalogo.
+
+**Risolto con una decisione di prodotto, non un'euristica**: "il budget
+è considerato a persona. 'Budget 500' e 'budget 500 a persona' sono lo
+stesso concetto." Budget e prezzo di ricerca sono ora la stessa unità di
+misura per definizione — `classify()` era già corretto, semplicemente
+non lo sapevamo. Se il viaggiatore dichiara esplicitamente un totale di
+gruppo ("700 euro in totale"), il sistema non lo accetta come budget a
+persona — chiede esplicitamente la cifra a testa, non divide per conto
+suo. Verificato dal vivo in entrambi i casi. Vedi `ARCHITECTURE.md`.
+
 ## Robustezza sul booking non verificabile (2026-09-15 ~00:20)
 
 Due mancanze reali, corrette: (1) "riprova" non aveva limite anche su un

@@ -8,3 +8,4 @@ dist/
 .wrangler/
 worker-configuration.d.ts
 .DS_Store
+HANDOFF-NEXT-SESSION.md

@@ -479,7 +479,7 @@ export class ConversationDO extends DurableObject<Env> {
     // product now — never answer a question about THIS proposal using
     // stale detail fetched for a previous, possibly rejected one.
     state.productDescription = null;
-    return this.say(state, { kind: "propose", ctx, precededBy });
+    return this.say(state, { kind: "propose", ctx, precededBy, adults: state.slots.adults! });
   }
 
   /** Ad-hoc informational question about the current proposal ("cosa
@@ -604,7 +604,7 @@ export class ConversationDO extends DurableObject<Env> {
           category: "compromise",
           compromise: { kind: "date", requested: requestedDate, offered: candidate.minDate },
         };
-        return this.say(state, { kind: "propose", ctx: state.proposal });
+        return this.say(state, { kind: "propose", ctx: state.proposal, adults: state.slots.adults! });
       }
       // Already on the candidate's own known-good minDate and it *still*
       // failed: this isn't a date problem, and retrying (the generic
@@ -637,35 +637,32 @@ export class ConversationDO extends DurableObject<Env> {
 
     const snapshot = await this.hofj.getItinerary(state.itineraryId, brand);
     const livePrice = Number(snapshot.data.totalPrice.amount);
-    const proposedPrice = candidate.price;
-    if (Math.abs(livePrice - proposedPrice) / proposedPrice > PRICE_CHANGE_TOLERANCE) {
+    // Verified live 2026-09-15 (sessionId 04022cc9-..., then confirmed
+    // again when Giuseppe asked "quindi mi aspetto che il prezzo a
+    // persona venga ricordato quando sto per pagare"): search() never
+    // sends an adults param, so candidate.price is priced for the
+    // package's own default occupancy — the real total genuinely scales
+    // with the actual party size. The proposal message itself already
+    // discloses this estimated total upfront (see "propose", engine/ai.ts)
+    // — comparing against that SAME estimate here, not the raw
+    // per-person price, means this step only ever flags a GENUINE new
+    // surprise (e.g. an odd-party-size room supplement) instead of
+    // re-announcing the party-size scaling a second time as if it were
+    // news, right after already telling the traveller to expect it.
+    const adults = state.slots.adults ?? 1;
+    const estimatedTotal = candidate.price * adults;
+    if (Math.abs(livePrice - estimatedTotal) / estimatedTotal > PRICE_CHANGE_TOLERANCE) {
       state.proposal = {
         ...proposal,
         candidate: { ...candidate, price: livePrice },
         category: "compromise",
-        compromise: { kind: "price", requested: `${proposedPrice}€`, offered: `${livePrice}€` },
+        compromise: { kind: "price", requested: `${estimatedTotal}€`, offered: `${livePrice}€` },
       };
       state.stage = "proposing";
-      // Verified live 2026-09-15 (sessionId 04022cc9-...) — not "the
-      // market is dynamic" (the model's own invented flourish, never an
-      // instruction we gave it, and not true): search never sends an
-      // adults param at all (HofjClient.search() has no such field), so
-      // its `price` is priced for the package's own built-in default
-      // occupancy — the real per-itinerary total genuinely scales with
-      // the actual party size (verified directly against the API: the
-      // same product's "Tennis Training" activity is billed per pax,
-      // 365€ × adults, plus an occasional room-supplement adjustment
-      // when the party doesn't fit the package's included room type).
-      // When the ratio matches adults cleanly, tell the model the REAL
-      // reason so it says something true and specific instead of
-      // fabricating one.
-      const adults = state.slots.adults ?? 1;
-      const scaledByPartySize = adults > 1 && Math.abs(livePrice - proposedPrice * adults) / (proposedPrice * adults) < 0.15;
       return this.say(state, {
         kind: "price_changed",
-        oldPrice: `${proposedPrice}€`,
+        oldPrice: `${estimatedTotal}€`,
         newPrice: `${livePrice}€`,
-        reason: scaledByPartySize ? `il prezzo di ricerca è una tariffa di riferimento, il totale reale è calcolato per la vostra comitiva di ${adults} persone` : undefined,
       });
     }
     state.totalPrice = snapshot.data.totalPrice;
