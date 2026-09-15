@@ -3,6 +3,8 @@ import { HofjApiError, HofjClient, type PaxPayload } from "./hofj/client";
 import { AiUnavailableError, interpret, say, type SayDirective } from "./engine/ai";
 import { extractMonthHint, resolveDate } from "./engine/dates";
 import { classify, searchCandidates } from "./engine/matcher";
+import { cachedDiscoveryCall, DISCOVERY_TTL_MS } from "./hofj/discoveryCache";
+import { acquireCriticalOrWait, acquireOptional, QuotaExhaustedError } from "./hofj/quotaClient";
 import { confirmPaymentIntent, createPaymentIntent } from "./stripe/client";
 import {
   EMPTY_SLOTS,
@@ -465,7 +467,21 @@ export class ConversationDO extends DurableObject<Env> {
     state: ConversationState,
     precededBy?: "rejected" | "unavailable",
   ): Promise<string> {
-    const { candidates, locationMatched } = await searchCandidates(this.hofj, state.slots);
+    // search() is priority P3 (discovery) — cached/coalesced first (see
+    // engine/matcher.ts, hofj/discoveryCache.ts), consulting the quota
+    // gate only on a genuine miss. A denial here means nothing has
+    // happened upstream (no cart, no charge) — degrade honestly and
+    // leave state exactly as it was, so the traveller's next message
+    // retries this same step cleanly (see ARCHITECTURE.md twist Phase 2).
+    let candidates, locationMatched;
+    try {
+      ({ candidates, locationMatched } = await searchCandidates(this.hofj, state.slots, this.env));
+    } catch (err) {
+      if (err instanceof QuotaExhaustedError) {
+        return this.say(state, { kind: "backpressure", state: "queued" });
+      }
+      throw err;
+    }
     const ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
     if (!ctx) {
       state.stage = "collecting";
@@ -495,7 +511,17 @@ export class ConversationDO extends DurableObject<Env> {
     const ctx = state.proposal!;
     if (state.productDescription === null) {
       try {
-        const detail = await this.hofj.getProduct(ctx.candidate.productId, ctx.candidate.brand);
+        // getProduct is priority P2 (optional, see ARCHITECTURE.md twist
+        // Phase 2): cached with a long TTL (marketing text barely
+        // changes), and a single non-blocking quota check with no retry —
+        // under pressure this is worth skipping outright, same graceful
+        // "" degrade already used for a real HOFJ error below, not worth
+        // making the traveller wait for.
+        const key = `product:${ctx.candidate.brand}:${ctx.candidate.productId}`;
+        const detail = await cachedDiscoveryCall(key, DISCOVERY_TTL_MS.product, async () => {
+          if (!(await acquireOptional(this.env))) throw new QuotaExhaustedError(0);
+          return this.hofj.getProduct(ctx.candidate.productId, ctx.candidate.brand);
+        });
         state.productDescription = detail.data.description ?? detail.data.shortDescription ?? "";
       } catch (err) {
         if (err instanceof HofjApiError) {
@@ -551,10 +577,29 @@ export class ConversationDO extends DurableObject<Env> {
    * silently re-verifies price against the live snapshot, writes real
    * traveller data, then tries to get a Stripe payment intent. */
   private async openRealCartAndAttemptPayment(state: ConversationState): Promise<string> {
+    // A quota-driven backpressure pause inside confirmBookingNow (below)
+    // can re-enter this function on a LATER turn with the real cart and
+    // real payment already done — re-running createItinerary from
+    // scratch here would open a second cart and charge a second time.
+    // Only this specific case (payment already succeeded) needs the
+    // guard: a denial on createItinerary's OWN gate check below returns
+    // before itineraryId is ever set, so that path always starts clean.
+    if (state.itineraryId && state.paymentIntentId) {
+      return this.confirmBookingNow(state, "full");
+    }
+
     const proposal = state.proposal!;
     const { candidate } = proposal;
     const brand = candidate.brand;
     const requestedDate = state.slots.dateFrom!;
+
+    // createItinerary is priority P0 (booking-critical, see
+    // ARCHITECTURE.md twist Phase 2) — worth a short bounded wait for
+    // quota rather than failing outright, since nothing has been
+    // committed yet if we give up (see acquireCriticalOrWait's doc).
+    if (!(await acquireCriticalOrWait(this.env))) {
+      return this.say(state, { kind: "backpressure", state: "queued" });
+    }
     // A single room only fits so many people — verified live: 3 adults
     // with rooms:1 on a real product 400ed upstream with
     // ComponentAvailability ("lack of availability"), and passing rooms:2
@@ -739,11 +784,18 @@ export class ConversationDO extends DurableObject<Env> {
     // from here is the sanctioned direct-Stripe bypass below. Still
     // called for real every time — not skipped — so it stays a live,
     // accurate check of upstream status instead of a stale assumption.
-    try {
-      await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
-    } catch (err) {
-      if (err instanceof HofjApiError) {
-        console.error("getPaymentIntent failed:", err.status, err.detail.slice(0, 200));
+    // Priority P2 (optional, see ARCHITECTURE.md twist Phase 2) — and the
+    // single cheapest one of all: its result is already discarded below
+    // regardless of outcome (see this function's own doc above), so under
+    // quota pressure it's worth skipping outright rather than spending a
+    // real call on it. A single non-blocking check, no retry.
+    if (await acquireOptional(this.env)) {
+      try {
+        await this.hofj.getPaymentIntent(state.itineraryId!, state.brand!);
+      } catch (err) {
+        if (err instanceof HofjApiError) {
+          console.error("getPaymentIntent failed:", err.status, err.detail.slice(0, 200));
+        }
       }
     }
     if (this.env.STRIPE_SECRET_KEY) {
@@ -848,6 +900,15 @@ export class ConversationDO extends DurableObject<Env> {
   }
 
   private async confirmBookingNow(state: ConversationState, paymentType: "full" | "plan"): Promise<string> {
+    // confirmBooking is priority P0 (booking-critical) same as
+    // createItinerary — but this call is ALSO the idempotent upsert
+    // itself (verified live, see this method's own doc above), so unlike
+    // createItinerary a denial here is safe to just wait out and retry:
+    // nothing new gets committed by waiting, and the eventual real call
+    // converges correctly however many times it's ultimately retried.
+    if (!(await acquireCriticalOrWait(this.env))) {
+      return this.say(state, { kind: "backpressure", state: "retrying" });
+    }
     try {
       const payment = state.paymentIntentId
         ? { paymentIntentId: state.paymentIntentId, paymentStatus: state.paymentStatus ?? "succeeded" }

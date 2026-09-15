@@ -113,6 +113,40 @@ Regole:
 - Se ricevi "Stai chiedendo in questo momento: ...", usalo per capire a quale campo appartiene una risposta breve e ambigua (es. "Milano" da solo). "città" compare sia nel viaggio (slotUpdates.city, la destinazione) sia nei dati del viaggiatore (travellerUpdates.city, dove abita) — sono DUE campi diversi, non confonderli: se stai chiedendo la città di residenza del viaggiatore, la risposta va SOLO in travellerUpdates.city, MAI in slotUpdates.city (la destinazione del viaggio è già decisa a quel punto e non va toccata).
 - "language": il nome della lingua in cui il viaggiatore sta scrivendo ADESSO, in italiano (es. "italiano", "inglese", "spagnolo", "francese", "tedesco"...). Valorizzalo solo se il messaggio è abbastanza lungo/chiaro da capirlo con sicurezza, o se sembra diverso dalla lingua usata nei messaggi precedenti (cambio di lingua a metà conversazione) — altrimenti lascialo null, non serve ripeterlo ogni turno.`;
 
+/** See Env.STUB_MODE's doc, types.ts. Deterministic and text-independent
+ * on purpose: the load test this feeds (loadtest/scale-50k.js) exists to
+ * stress THIS Worker's own architecture (DO fan-out, the quota gate,
+ * caching/coalescing) under 50k concurrent travellers, not to re-test NLU
+ * — so the canned values are fixed and chosen to be internally consistent
+ * with hofj/client.ts's own stub responses (same 250€/person price, same
+ * 2 adults → 500€ total) precisely so the stubbed conversation reaches
+ * "booked" in the minimum number of turns, without ever tripping the
+ * (real, correct) price-changed/compromise logic that has nothing to do
+ * with what this load test measures. Fills every still-missing field in
+ * ONE response — both trip slots and traveller fields — rather than
+ * one-per-turn, since a realistic per-turn UX pace isn't what's being
+ * tested here either. */
+function stubInterpret(currentSlots: Slots, currentTraveller: TravellerInfo): RawInterpretation {
+  return {
+    slotUpdates: {
+      sport: currentSlots.sport ?? "tennis",
+      city: currentSlots.city ?? "Roma",
+      dateFromText: currentSlots.dateFrom ? undefined : "25 settembre 2026",
+      budget: currentSlots.budget ?? 300,
+      adults: currentSlots.adults ?? 2,
+    },
+    travellerUpdates: {
+      firstName: currentTraveller.firstName ?? "Load",
+      lastName: currentTraveller.lastName ?? "Test",
+      email: currentTraveller.email ?? "loadtest@example.com",
+      phone: currentTraveller.phone ?? "0000000000",
+      city: currentTraveller.city ?? "Milano",
+    },
+    decision: "yes",
+    language: null,
+  };
+}
+
 export async function interpret(
   env: Env,
   currentSlots: Slots,
@@ -120,6 +154,7 @@ export async function interpret(
   latestUserText: string,
   currentlyAsking: string | null = null,
 ): Promise<RawInterpretation> {
+  if (env.STUB_MODE === "1") return stubInterpret(currentSlots, currentTraveller);
   // "city" exists on both slots (trip destination) and traveller (billing
   // address) — without knowing which question was just asked, a bare
   // answer like "Milano" is genuinely ambiguous. Verified live: this
@@ -205,6 +240,18 @@ export type SayDirective =
       reason?: string;
     }
   | { kind: "payment_unavailable"; retrying: boolean }
+  | {
+      /** HOFJ's shared quota (120 req/min, verified live 2026-09-15) is
+       * momentarily exhausted — see hofj/quotaGate.ts and
+       * ARCHITECTURE.md's scalability twist section. Never a bare
+       * failure: "queued" means nothing has happened yet and is safe to
+       * retry (e.g. the traveller's own message again in a few seconds);
+       * "retrying" means the system itself is already waiting and will
+       * try again automatically without the traveller needing to do
+       * anything. */
+      kind: "backpressure";
+      state: "queued" | "retrying";
+    }
   | { kind: "booking_forbidden" }
   | { kind: "booking_unverified" }
   | { kind: "booked"; reservationCode: string; title: string; totalPrice: string; startDate: string }
@@ -313,6 +360,10 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
       return d.retrying
         ? `Il sistema di pagamento non risponde in questo momento. Di' che ci stai riprovando subito, tono rassicurante, una frase.`
         : `Il sistema di pagamento del fornitore non è disponibile in questo momento (problema tecnico loro, non del viaggiatore). Scusati brevemente e chiedi se preferisce che ci riprovi tra poco o che lasci i suoi dati per essere ricontattato appena torna disponibile.`;
+    case "backpressure":
+      return d.state === "retrying"
+        ? `Il sistema è sotto forte carico in questo momento (molte richieste insieme). Di' in una frase breve e rassicurante che ci stai riprovando tu stesso tra pochi secondi, senza che il viaggiatore debba fare nulla — non è un errore, solo tanta richiesta insieme.`
+        : `Il sistema è sotto forte carico in questo momento (molte richieste insieme) e la sua richiesta è in coda — nulla è andato perso, nessun addebito è stato fatto. Chiedi di scrivere di nuovo tra pochi secondi per riprovare, tono rassicurante, una frase breve.`;
     case "booking_forbidden":
       return `C'è un problema di autorizzazione lato nostro sistema che impedisce di confermare la prenotazione in questo momento (non è colpa del viaggiatore né un problema di disponibilità). Scusati, sii onesto e diretto, di' che verrà segnalato internamente.`;
     case "booking_unverified":
@@ -347,6 +398,10 @@ Rispondi alla domanda usando SOLO queste informazioni — se la descrizione non 
 }
 
 export async function say(env: Env, directive: SayDirective, language: string | null = null): Promise<string> {
+  // See Env.STUB_MODE's doc, types.ts — the load test only asserts on
+  // state.stage/HTTP status (loadtest/scale-50k.js), never on reply text,
+  // so a fixed placeholder is enough and skips the AI call entirely.
+  if (env.STUB_MODE === "1") return `[stub:${directive.kind}]`;
   const instruction = directiveToInstruction(directive);
   return chat(env, buildSaySystem(language), instruction);
 }

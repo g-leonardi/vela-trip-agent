@@ -20,17 +20,24 @@
     "bindings": [
       { "name": "CONVERSATION", "class_name": "ConversationDO" },
       { "name": "USER_PROFILE", "class_name": "UserProfileDO" },
-      { "name": "FOLLOWUP", "class_name": "FollowUpDO" }
+      { "name": "FOLLOWUP", "class_name": "FollowUpDO" },
+      { "name": "HOFJ_QUOTA_GATE", "class_name": "HofjQuotaGate" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] },
     { "tag": "v2", "new_sqlite_classes": ["UserProfileDO"] },
-    { "tag": "v3", "new_sqlite_classes": ["FollowUpDO"] }
+    { "tag": "v3", "new_sqlite_classes": ["FollowUpDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["HofjQuotaGate"] }
   ],
   "vars": {
     "HOFJ_BASE_URL": "https://api.hofj.com",
     "HOFJ_BRAND": "terrarossa.com",
-    "HOFJ_LOCALE": "it"
+    "HOFJ_LOCALE": "it",
+    // Buffer under HOFJ's real 120/min quota (verified live 2026-09-15) —
+    // see hofj/quotaGate.ts and ARCHITECTURE.md's scalability twist
+    // section. STUB_MODE is deliberately NOT set here — see
+    // wrangler.loadtest.jsonc, never this file.
+    "HOFJ_QUOTA_PER_MIN": "100"
   }
 }

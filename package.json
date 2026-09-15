@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "cf-typegen": "wrangler types",
     "prompt-suite": "node scripts/prompt-suite.mjs",
-    "prompt-suite:run": "node scripts/prompt-suite.mjs --run"
+    "prompt-suite:run": "node scripts/prompt-suite.mjs --run",
+    "loadtest:dev": "wrangler dev --config wrangler.loadtest.jsonc --port 8788"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.1.9",

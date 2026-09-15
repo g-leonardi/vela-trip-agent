@@ -1,0 +1,55 @@
+// Load-test-only wrangler config for loadtest/scale-50k.js — NEVER used
+// for `npm run deploy` (that always reads wrangler.jsonc). Two
+// deliberate differences from production:
+//
+//  1. STUB_MODE: "1" — every HOFJ/Stripe/AI call becomes an instant,
+//     in-process canned response (see engine/ai.ts, hofj/client.ts,
+//     stripe/client.ts). This is what makes it safe to simulate 50,000
+//     travellers in 10 minutes at all: real HOFJ has a 120 req/min quota
+//     shared with other people's testing, real Stripe would create real
+//     (if test-mode) API load, and real Workers AI/Anthropic would both
+//     cost real money and saturate long before 50k users regardless (a
+//     known, separate, DELIBERATELY out-of-scope bottleneck — see
+//     ARCHITECTURE.md's twist section). This load test exists to prove
+//     something else entirely: that THIS Worker's own architecture (DO
+//     fan-out, the quota gate, discovery caching/coalescing, admission
+//     control) keeps 50k travellers from becoming 50k+ upstream calls.
+//
+//  2. No `ai` binding at all, and HOFJ_BASE_URL points at an obviously
+//     fake host. Belt-and-braces: if the STUB_MODE short-circuit were
+//     ever bypassed by a bug, this config makes that fail loudly and
+//     instantly (env.AI undefined / DNS failure) instead of silently
+//     spending real Workers AI credits or hammering real HOFJ — same
+//     reasoning wrangler.test.jsonc already uses for dropping AI's
+//     `remote: true` in unit tests, taken one step further here since an
+//     actual 50k-request burst is a much bigger accident to guard
+//     against than a handful of unit test runs.
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "vela-trip-agent-loadtest",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "CONVERSATION", "class_name": "ConversationDO" },
+      { "name": "USER_PROFILE", "class_name": "UserProfileDO" },
+      { "name": "FOLLOWUP", "class_name": "FollowUpDO" },
+      { "name": "HOFJ_QUOTA_GATE", "class_name": "HofjQuotaGate" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ConversationDO"] },
+    { "tag": "v2", "new_sqlite_classes": ["UserProfileDO"] },
+    { "tag": "v3", "new_sqlite_classes": ["FollowUpDO"] },
+    { "tag": "v4", "new_sqlite_classes": ["HofjQuotaGate"] }
+  ],
+  "vars": {
+    "HOFJ_BASE_URL": "https://stub.invalid",
+    "HOFJ_BRAND": "terrarossa.com",
+    "HOFJ_LOCALE": "it",
+    "HOFJ_API_KEY": "unused-under-stub-mode",
+    "HOFJ_QUOTA_PER_MIN": "100",
+    "STUB_MODE": "1"
+  }
+}

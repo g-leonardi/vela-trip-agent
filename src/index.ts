@@ -1,8 +1,10 @@
 import { isProfileComplete, type Env } from "./types";
+import { getCacheStats } from "./hofj/discoveryCache";
 
 export { ConversationDO } from "./conversation";
 export { UserProfileDO } from "./userProfile";
 export { FollowUpDO } from "./followUp";
+export { HofjQuotaGate } from "./hofj/quotaGate";
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -61,6 +63,16 @@ export default {
       const stub = env.CONVERSATION.getByName(body.sessionId);
       const result = await stub.confirmPaymentAndBook();
       return json(result);
+    }
+
+    // Only meaningful (and only ever exposed) under STUB_MODE — see
+    // Env.STUB_MODE's doc, types.ts. This is how loadtest/scale-50k.js
+    // proves its central quantitative claim: 50k simulated travellers did
+    // NOT become 50k+ upstream HOFJ calls. Kept off the public surface in
+    // every real deployment (wrangler.jsonc never sets STUB_MODE).
+    if (url.pathname === "/api/debug/quota-stats" && request.method === "GET" && env.STUB_MODE === "1") {
+      const gate = await env.HOFJ_QUOTA_GATE.getByName("gate").stats();
+      return json({ gate, cache: getCacheStats() });
     }
 
     if (url.pathname === "/api/state" && request.method === "GET") {

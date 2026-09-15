@@ -16,7 +16,19 @@ interface PaymentIntent {
   status: string;
 }
 
+/** See Env.STUB_MODE's doc, types.ts — load-test-only, never set in
+ * production. No real Stripe call, no real charge, no network at all. */
+async function stubRequest(path: string): Promise<PaymentIntent> {
+  await new Promise((r) => setTimeout(r, 40));
+  return {
+    id: `stub_pi_${crypto.randomUUID()}`,
+    client_secret: "stub_secret",
+    status: path.endsWith("/confirm") ? "succeeded" : "requires_confirmation",
+  };
+}
+
 async function request(env: Env, path: string, params: Record<string, string>): Promise<PaymentIntent> {
+  if (env.STUB_MODE === "1") return stubRequest(path);
   if (!env.STRIPE_SECRET_KEY) throw new StripeApiError(0, "STRIPE_SECRET_KEY not configured");
   const res = await fetch(`https://api.stripe.com/v1${path}`, {
     method: "POST",

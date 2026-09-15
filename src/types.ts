@@ -4,10 +4,24 @@ export interface Env {
   CONVERSATION: DurableObjectNamespace<import("./conversation").ConversationDO>;
   USER_PROFILE: DurableObjectNamespace<import("./userProfile").UserProfileDO>;
   FOLLOWUP: DurableObjectNamespace<import("./followUp").FollowUpDO>;
+  /** Single shared admission-control point for HOFJ's own per-client
+   * rolling quota (120 req/min, verified live 2026-09-15) — see
+   * hofj/quotaGate.ts and ARCHITECTURE.md's scalability twist section. */
+  HOFJ_QUOTA_GATE: DurableObjectNamespace<import("./hofj/quotaGate").HofjQuotaGate>;
   HOFJ_BASE_URL: string;
   HOFJ_BRAND: string;
   HOFJ_LOCALE: string;
   HOFJ_API_KEY: string;
+  /** Token-bucket capacity for HOFJ_QUOTA_GATE, deliberately below the
+   * real 120/min limit. Optional — defaults inside quotaGate.ts. */
+  HOFJ_QUOTA_PER_MIN?: string;
+  /** When "1", every HOFJ/Stripe/AI call is replaced by an instant, fully
+   * in-process canned response — never set in wrangler.jsonc (production),
+   * only in wrangler.loadtest.jsonc, so the 50k-traveller load test can
+   * exercise this Worker's OWN architecture (DOs, quota gate, caching,
+   * coalescing) without spending real quota, real money, or real AI
+   * tokens. See engine/ai.ts, hofj/client.ts, stripe/client.ts. */
+  STUB_MODE?: string;
   ANTHROPIC_API_KEY?: string;
   STRIPE_PUBLISHABLE_KEY?: string;
   /** Restricted Stripe secret key (test mode), confirmed by Vela

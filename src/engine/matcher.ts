@@ -1,5 +1,7 @@
 import type { HofjClient, SearchProduct } from "../hofj/client";
-import type { Candidate, ConfidenceCategory, ProposalContext, Slots } from "../types";
+import { cachedDiscoveryCall, DISCOVERY_TTL_MS } from "../hofj/discoveryCache";
+import { acquireDiscoveryOrThrow } from "../hofj/quotaClient";
+import type { Candidate, ConfidenceCategory, Env, ProposalContext, Slots } from "../types";
 
 /** Budget beyond which we stop calling it a "compromise" and ask a
  * clarifying question instead of proposing an unreasonably priced trip. */
@@ -278,13 +280,34 @@ const FALLBACK_BRAND = "weebora.com";
  * downstream by the booking pipeline (see Candidate.brand's doc,
  * types.ts) — `brand` is always explicit here, never left to the
  * client's own default, precisely so this tag is always right. */
-async function rawSearchOneBrand(hofj: HofjClient, slots: Slots, brand: string): Promise<BrandedProduct[]> {
+/** Routes a search() call through the short-lived discovery cache +
+ * coalescing + quota gate when `env` is provided (real production/load-
+ * test traffic, see conversation.ts) — falls straight through to
+ * `hofj.search()` unchanged when it isn't, which is exactly what every
+ * existing unit test in matcher.test.ts still does, so none of them
+ * needed to change for this. See ARCHITECTURE.md, twist Phase 2 design:
+ * search() is priority P3 (discovery) — cached/coalesced first, and only
+ * consults the quota gate on a genuine miss. */
+async function gatedSearch(
+  hofj: HofjClient,
+  env: Env | undefined,
+  params: Parameters<HofjClient["search"]>[0],
+): Promise<ReturnType<HofjClient["search"]>> {
+  if (!env) return hofj.search(params);
+  const key = `search:${params.brand}:${params.keyword ?? ""}:${params.topN ?? ""}`;
+  return cachedDiscoveryCall(key, DISCOVERY_TTL_MS.search, async () => {
+    await acquireDiscoveryOrThrow(env);
+    return hofj.search(params);
+  });
+}
+
+async function rawSearchOneBrand(hofj: HofjClient, env: Env | undefined, slots: Slots, brand: string): Promise<BrandedProduct[]> {
   const tag = (products: SearchProduct[]): BrandedProduct[] => products.map((p) => ({ ...p, brand }));
   if (slots.preferences) {
-    const withPrefs = await hofj.search({ keyword: buildKeyword(slots, true), topN: 15, brand });
+    const withPrefs = await gatedSearch(hofj, env, { keyword: buildKeyword(slots, true), topN: 15, brand });
     if (withPrefs.data.products.length > 0) return tag(withPrefs.data.products);
   }
-  const plain = await hofj.search({ keyword: buildKeyword(slots, false) || undefined, topN: 15, brand });
+  const plain = await gatedSearch(hofj, env, { keyword: buildKeyword(slots, false) || undefined, topN: 15, brand });
   return tag(plain.data.products);
 }
 
@@ -312,19 +335,19 @@ export interface SearchResult {
  * fall back to the best unfiltered results and let classify() flag it as
  * a disclosed compromise, consistent with the policy that location may be
  * decided by the agent but never silently. */
-export async function searchCandidates(hofj: HofjClient, slots: Slots): Promise<SearchResult> {
+export async function searchCandidates(hofj: HofjClient, slots: Slots, env?: Env): Promise<SearchResult> {
   // Date is deliberately NOT passed as a hard filter: a near-miss product
   // (available in a different week) is exactly the "compromise" case the
   // dialogue should be able to offer, not silently drop. classify() does
   // the date comparison itself once we have the ranked candidates.
-  const primaryRaw = await rawSearchOneBrand(hofj, slots, hofj.brand);
+  const primaryRaw = await rawSearchOneBrand(hofj, env, slots, hofj.brand);
   if (slots.city) {
     const filtered = filterToMatchingCity(slots, primaryRaw);
     if (filtered.length > 0) return { candidates: filtered, locationMatched: true };
   }
 
   if (slots.sport === "padel") {
-    const fallbackRaw = await rawSearchOneBrand(hofj, slots, FALLBACK_BRAND);
+    const fallbackRaw = await rawSearchOneBrand(hofj, env, slots, FALLBACK_BRAND);
     if (slots.city) {
       const filtered = filterToMatchingCity(slots, fallbackRaw);
       if (filtered.length > 0) return { candidates: filtered, locationMatched: true };

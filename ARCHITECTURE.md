@@ -559,6 +559,218 @@ subito "365 euro a persona — quindi 730 euro complessivi per voi due".
 accetta quel numero come budget a persona, richiede esplicitamente la
 cifra a testa invece di dividere per conto suo.
 
+### Il twist di scalabilità: 50.000 viaggiatori in 10 minuti contro una quota HOFJ di 120/min (2026-09-15, checkpoint git `pre-twist-scale-challenge`)
+
+Testo ricevuto da Vela a metà sfida: un lancio commerciale porta 50.000
+viaggiatori nella stessa finestra di 10 minuti, contro una quota HOFJ
+condivisa e rolling di 120 richieste/minuto (`GET /v1/quota`, verificato
+dal vivo con UNA sola chiamata deliberata — richiamarlo consuma esso
+stesso quota), senza `Retry-After` né header `RateLimit-*`, con `POST
+/v1/bookings` documentato come upsert idempotente su `itineraryId` (fatto
+già verificato dal vivo in questa stessa sessione — vedi la sezione sopra
+su idempotenza — non una scoperta fatta apposta per il twist). Risposto
+seguendo un piano a fasi con approvazione esplicita di Giuseppe ad ogni
+passaggio (analisi → design → load test → implementazione), con una
+milestone git (`pre-twist-scale-challenge`, tag annotato pushato) come
+punto di rollback esplicito prima di iniziare.
+
+**Fase 1 — call graph e budget quota.** Ogni prenotazione completa può
+chiamare HOFJ fino a 4 volte solo in fase di ricerca (`search()`, con
+retry preferenze + fallback Weebora per il padel — vedi
+`engine/matcher.ts`), poi `createItinerary`, `getItinerary` ×2,
+`putCustomer`, `putPax`, `getPaymentIntent` (il cui risultato viene già
+scartato dal codice esistente), `confirmBooking`. La domanda centrale non
+è "quanti utenti reggiamo" ma "come impediamo che 50.000 viaggiatori
+diventino 50.000+ chiamate upstream".
+
+**Fase 2 — design.** Tre meccanismi, tutti nuovi codice, nessuna
+riscrittura del booking flow esistente:
+- **Cache discovery-only** (`hofj/discoveryCache.ts`): `search()` (TTL
+  25s) e `getProduct()` (TTL 180s) passano da una cache in due livelli —
+  una `Map` in memoria per isolate, più la Cache API di Workers condivisa
+  tra isolate dello stesso colo — con *request coalescing* (una `Map` di
+  Promise in-flight) per richieste equivalenti arrivate mentre la prima è
+  ancora in corso. **Mai** su `getItinerary`/`createItinerary`/
+  `confirmBooking` — quelli restano sempre live, per costruzione: cachare
+  la verifica finale vorrebbe dire tornare a rischiare di dichiarare
+  "prenotato" senza controllo reale, esattamente il problema già risolto
+  altrove in questa sessione.
+- **Gate di quota** (`hofj/quotaGate.ts`, `hofj/tokenBucket.ts`): un'unica
+  Durable Object (`HofjQuotaGate`, istanza singola `getByName("gate")`)
+  con un token bucket a 100/min (margine di sicurezza sotto il limite
+  reale di 120), stato tenuto in memoria per l'intera vita dell'istanza e
+  scritto su storage solo a checkpoint (max ogni 2s / 500 chiamate) — mai
+  ad ogni singola `acquire()`, altrimenti il meccanismo pensato per
+  alleggerire la pressione diventerebbe esso stesso il collo di bottiglia.
+  Una singola DO globale per logica di business è un anti-pattern noto
+  (vedi la skill durable-objects) — ma qui l'hot path è aritmetica pura in
+  memoria, zero I/O per chiamata: esattamente il "coordination atom" per
+  cui una DO è pensata, tenuto deliberatamente minimale.
+- **Classi di priorità**, riviste rispetto al testo letterale del twist
+  (P0/P1/P2/P3 "booking/cart/accommodation/discovery") perché il call
+  graph reale non ha uno step "availability" separato: **P0** (mai
+  sacrificato, solo messo in coda) — `createItinerary`, `confirmBooking`;
+  **P2** (opzionale, un solo tentativo senza attesa) — `getProduct`,
+  `getPaymentIntent` (quest'ultimo il primo a saltare del tutto sotto
+  pressione, dato che il suo risultato è già scartato dal codice
+  esistente); **P3** (discovery) — `search()`, dietro cache/coalescing,
+  consulta il gate solo su miss reale.
+
+**Fase 3 — load test.** Terzo scenario k6 (`loadtest/scale-50k.js`),
+separato dai due scenari esistenti in `loadtest/booking-flow.js`
+(lasciati **invariati**, colpiscono ancora HOFJ/Workers AI reali come
+calibrazione onesta). Il nuovo scenario gira contro
+`wrangler.loadtest.jsonc`, una config wrangler dedicata che imposta
+`STUB_MODE: "1"` — mai in `wrangler.jsonc` (produzione) — che sostituisce
+HOFJ, Stripe e Workers AI/Anthropic con risposte canned istantanee e
+in-process (vedi `engine/ai.ts`, `hofj/client.ts`, `stripe/client.ts`):
+zero quota reale, zero addebiti Stripe reali, **zero costo AI reale** —
+esattamente il vincolo che Giuseppe ha posto esplicitamente prima di dare
+il via libera a questa fase ("i bottleneck legati ai nostri Workers AI e
+ai 5 dollari di token Anthropic... cerca di non toccarli"). Come ulteriore
+guardia, la config di load test non dichiara nemmeno il binding `ai` e
+punta `HOFJ_BASE_URL` a un host inesistente — se lo short-circuit dello
+stub venisse mai bypassato da un bug, il test fallirebbe rumorosamente
+all'istante invece di spendere credito AI reale o colpire HOFJ reale in
+silenzio.
+
+Verificato dal vivo, prima in isolamento (una singola conversazione end-
+to-end, 2 soli turni fino a "booked" grazie a `interpret()` stubbato in
+modo deterministico), poi con un burst concorrente deliberato (60
+conversazioni in parallelo): **41 prenotate, 19 con una risposta di
+backpressure onesta (`[stub:backpressure]`, stage rimasto
+`collecting_traveller`, MAI un fallimento secco)**, e un retry successivo
+su una delle 19 ha completato la prenotazione riusando lo STESSO
+`itineraryId`/`paymentIntentId` già aperti — la prova dal vivo che il
+flusso di retry idempotente su `confirmBooking` (Fase 2) funziona
+esattamente come progettato, senza carrello né addebito duplicati.
+
+Smoke test più ampio (600 viaggiatori simulati / 60s, deliberatamente
+molto oltre la capacità sostenibile del gate a quella scala, per
+verificare il comportamento sotto saturazione): 0% di richieste HTTP
+fallite su 3454 richieste totali, 36 prenotazioni completate, 2822
+risposte di backpressure oneste, **0 errori 500**. `/api/debug/quota-stats`
+(esposto SOLO sotto `STUB_MODE`, mai in produzione) a fine corsa:
+`totalGranted: 191` contro `totalDenied: 43287` sul gate — la saturazione
+deliberata del test funziona esattamente come previsto — e sulla cache
+discovery, `664 memoryHits + 74 coalesced + 1 cacheApiHits` contro **solo
+30 misses**: su centinaia di ricerche equivalenti, la stragrande
+maggioranza non ha mai consultato il gate né consumato un token, la
+prova quantitativa diretta che cache+coalescing stanno facendo il lavoro
+per cui esistono. Misurato anche un effetto collaterale reale e corretto
+sul momento: un'attesa massima di 8s dentro `acquireCriticalOrWait` (vedi
+Fase 2) spingeva il p95 di latenza HTTP oltre 8s sotto saturazione —
+inaccettabile per un agente pensato per essere ascoltato più che letto
+(vedi il prompt vocale in `engine/ai.ts`). Ridotto a un'attesa massima di
+3s: un'attesa più corta e onesta ("ci riprovo tra poco"), non un lungo
+silenzio.
+
+**Il run completo, 50.000 viaggiatori simulati sui 10 minuti reali della
+finestra** (`TRAVELLERS=50000 WINDOW_SECONDS=600`, eseguito dal vivo,
+numeri reali di questa corsa, non stimati): 57.865 conversazioni
+completate (oltre le 50.000 richieste — il generatore di carico satura
+prima del limite), `/api/debug/quota-stats` a fine corsa: **gate
+871 granted / 232.427 denied** (coerente con l'oversubscription
+deliberata del test — vedi sotto), **cache discovery: 31.182 memoryHits +
+1.442 coalesced + 8 cacheApiHits contro solo 167 misses** — su oltre
+32.000 lookup di ricerca, il 99,5% non ha mai consultato il gate né speso
+un token. 142 prenotazioni completate per davvero, zero errori 500
+applicativi.
+
+**Un secondo dato, più importante del primo**: il confronto tra il ritmo
+di arrivo del test (fino a ~117 nuovi viaggiatori/secondo, il picco che
+"50.000 in 10 minuti, non spalmati su un giorno" implica davvero) e la
+capacità reale della quota HOFJ (100/min ≈ 1,7/secondo, sotto la soglia
+reale di 120/min) rivela un limite che nessuna cache o coalescing può
+aggirare: `createItinerary`/`confirmBooking` non sono cacheable per
+definizione (sono per-viaggiatore, per-carrello, devono restare live).
+Con ~117 nuovi viaggiatori/secondo che richiedono ciascuno 2 chiamate P0,
+la domanda di picco (≈230+ ammissioni/secondo desiderate) supera di
+~100-140 volte quello che la quota reale può sostenere. **Le 142
+prenotazioni realmente completate in questa corsa non sono un fallimento
+dell'architettura — sono la prova che sta facendo esattamente il suo
+lavoro**: la scarsità reale e non aggirabile di HOFJ (al massimo
+~100 ammissioni/min ≈ 1.000 in 10 minuti, split tra createItinerary e
+confirmBooking ≈ 500 prenotazioni reali possibili in teoria in quella
+finestra, indipendentemente da qualunque cosa costruiamo dal nostro lato)
+viene onorata, mai finta. Le altre decine di migliaia di richieste hanno
+ricevuto una risposta di backpressure onesta invece di un fallimento
+silenzioso, una prenotazione duplicata, o una dichiarazione di
+"prenotato" non vera — è questa la risposta corretta e onesta alla
+domanda del twist su "cosa sacrifichi per primo quando la quota finisce":
+non i viaggiatori, ma la promessa di un booking istantaneo per tutti.
+
+**Un limite del setup di test, dichiarato con la stessa onestà, non
+nascosto**: il 41,5% delle richieste HTTP registrate da k6 come fallite
+NON sono fallimenti applicativi — verificato nel log del server locale
+(`wrangler dev`) che OGNI singola risposta effettivamente prodotta dal
+Worker in questa corsa è stata un 200 (0 codici non-200 loggati). Le
+30.298 richieste fallite sono tutte "Network connection lost" lato
+ProxyWorker locale di `wrangler dev` — un processo Node singolo sulla
+stessa macchina che genera anche il carico k6, non rappresentativo di un
+edge Cloudflare reale distribuito. Questo è un limite noto e onesto del
+testare "contro il proprio edge" in locale su un solo laptop condiviso
+tra client e server di test, non una prova contro l'architettura stessa
+(che non ha mai prodotto un fallimento applicativo osservabile in questa
+corsa). Un run più rigoroso contro un deploy reale su Cloudflare (ancora
+in `STUB_MODE`, ancora zero costo HOFJ/Stripe/AI, ma su infrastruttura
+edge distribuita invece del laptop di sviluppo) è il passo naturale
+successivo se il tempo della challenge lo permette — non eseguito qui
+senza consenso esplicito, dato che richiede un deploy separato (nome
+Worker distinto, `vela-trip-agent-loadtest`, mai lo stesso deployment di
+produzione).
+
+**Fase 4 — implementazione.** File nuovi: `hofj/tokenBucket.ts` (logica
+pura, testata — vedi `test/tokenBucket.test.ts`), `hofj/quotaGate.ts`
+(la Durable Object), `hofj/quotaClient.ts` (helper per i tre pattern di
+attesa — `acquireCriticalOrWait` per P0, `acquireOptional` per P2,
+`acquireDiscoveryOrThrow` per P3), `hofj/discoveryCache.ts` (cache +
+coalescing + contatori). File toccati: `engine/matcher.ts`
+(`searchCandidates` accetta un `env` opzionale — omesso, si comporta
+esattamente come prima, motivo per cui **nessun test esistente in
+`matcher.test.ts` ha dovuto cambiare**), `conversation.ts` (i quattro
+punti di innesto P0/P2/P3 sopra), `engine/ai.ts` (nuova direttiva
+`backpressure`, mai un fallimento muto), `types.ts`/`wrangler.jsonc`
+(nuovo binding `HOFJ_QUOTA_GATE`, migrazione `v4`), `index.ts` (endpoint
+`/api/debug/quota-stats`, attivo solo sotto `STUB_MODE`).
+
+Un dettaglio di correttezza emerso implementando, non ipotizzato:
+introdurre un'attesa di quota PRIMA di `confirmBooking` rende
+raggiungibile un caso nuovo — un pagamento reale già riuscito, ma la
+richiesta di conferma bloccata dal gate. Senza una guardia,
+`openRealCartAndAttemptPayment` (che prima non aveva mai bisogno di
+gestire un rientro a metà) avrebbe riaperto un secondo carrello e tentato
+un secondo pagamento al turno successivo. Aggiunta una guardia mirata (
+`if (state.itineraryId && state.paymentIntentId) return
+this.confirmBookingNow(...)`) che copre esattamente questo caso nuovo
+senza toccare il comportamento preesistente del flusso di riconferma
+prezzo-cambiato (che invece riapre volutamente il carrello, comportamento
+originale, invariato).
+
+**Cosa degrada per primo, cosa non deve mai degradare.** Ordine di
+sacrificio sotto pressione: 1) `search()` — cache più aggressiva,
+coalescing, eventualmente risultati leggermente meno freschi; 2)
+`getProduct()`/`getPaymentIntent()` — saltati del tutto, il primo con un
+degrado onesto già esistente ("non riesco a recuperare il dettaglio ora"),
+il secondo perché il suo risultato non serve comunque; 3) tempo di attesa
+sul turno (fino a 3s prima di un messaggio di backpressure onesto). Cosa
+NON degrada mai, per costruzione: **nessuna prenotazione doppia,
+nessun addebito doppio** (guardia sopra + idempotenza nativa di
+`confirmBooking`), **nessuna dichiarazione di "prenotato" senza verifica
+reale** (il controllo `checkout.status !== "BookingInitiated"` resta
+sempre live, mai cachato), **mai un errore 500 secco** — ogni stato di
+back-pressure è una risposta 200 con un messaggio onesto.
+
+**Perimetro esplicito, non una dimenticanza**: il collo di bottiglia AI
+(Workers AI satura già a ~100 utenti concorrenti, documentato più sopra
+nella sezione sui load test esistenti) resta noto, reale, e
+**deliberatamente fuori scope per questa evoluzione** — che risponde
+specificamente al vincolo di quota HOFJ posto dal twist, non a "reggere
+50.000 utenti end-to-end con AI reale", cosa che nessun budget di $5 di
+crediti Anthropic per un prototipo potrebbe mai sostenere comunque. Il
+load test di questa sezione lo dimostra per costruzione: gira interamente
+con `STUB_MODE`, zero chiamate AI reali, zero costo.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

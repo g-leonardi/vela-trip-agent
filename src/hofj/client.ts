@@ -87,12 +87,100 @@ export class HofjClient {
   readonly brand: string;
   private readonly locale: string;
   private readonly key: string;
+  /** See Env.STUB_MODE's doc, types.ts — never true outside
+   * wrangler.loadtest.jsonc. */
+  private readonly stub: boolean;
+  /** Load-test-only bookkeeping: which stub itineraryIds have had a stub
+   * confirmBooking() call, so a subsequent stub getItinerary() reports a
+   * real state transition (not stuck on "BookingInitiated" forever) —
+   * mirrors the real upstream behavior this client verified live
+   * 2026-09-14/15 (see confirmBooking's doc below). Instance-scoped
+   * (one HofjClient per ConversationDO, see conversation.ts), so this
+   * never leaks across conversations. */
+  private readonly stubConfirmed = new Set<string>();
 
   constructor(env: Env) {
     this.base = env.HOFJ_BASE_URL;
     this.brand = env.HOFJ_BRAND;
     this.locale = env.HOFJ_LOCALE;
     this.key = env.HOFJ_API_KEY;
+    this.stub = env.STUB_MODE === "1";
+  }
+
+  /** Instant, deterministic canned responses for the load-test stub mode
+   * — no fetch(), no real quota consumed. Small artificial delays keep
+   * the load test's own latency metrics meaningful (not literally 0ms)
+   * without the real 15s upstream timeout risk. Shapes are deliberately
+   * simple and internally consistent (fixed price/budget/adults) so the
+   * stubbed conversation always reaches "booked" in the fewest turns,
+   * instead of hitting a compromise/price-changed loop that has nothing
+   * to do with what this load test is actually measuring (see
+   * loadtest/scale-50k.js). */
+  private async stubRequest<T>(method: string, path: string, opts: { body?: unknown } = {}): Promise<T> {
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    if (path === "/v1/recommendations/search") {
+      await wait(50);
+      return {
+        data: {
+          total: 1,
+          products: [
+            {
+              productId: 1,
+              title: "Stub Tennis Package",
+              price: 250,
+              currency: "EUR",
+              primaryCategory: "tennis",
+              primaryDestination: "Roma",
+              country: "IT",
+              minDate: "2026-01-01",
+              maxDate: "2027-12-31",
+              defaultDurationInDays: 3,
+            },
+          ],
+        },
+      } as T;
+    }
+    if (path.startsWith("/v1/products/")) {
+      await wait(40);
+      return { data: { id: 1, title: "Stub Tennis Package", shortDescription: "stub", description: "Load-test stub product." } } as T;
+    }
+    if (path === "/v1/itineraries" && method === "POST") {
+      await wait(80);
+      return { data: { itineraryId: `stub-${crypto.randomUUID()}` } } as T;
+    }
+    if (/^\/v1\/itineraries\/[^/]+$/.test(path) && method === "GET") {
+      const itineraryId = path.split("/")[3]!;
+      await wait(70);
+      return {
+        data: {
+          productId: "1",
+          title: "Stub Tennis Package",
+          titleVenue: "Roma",
+          totalPrice: { amount: "500", currency: "EUR" }, // 250/person stub price x 2 stub adults
+          startDate: "2026-09-25",
+          endDate: "2026-09-28",
+          checkout: { status: this.stubConfirmed.has(itineraryId) ? "Booked" : "BookingInitiated", total: { amount: "500", currency: "EUR" } },
+        },
+      } as T;
+    }
+    if (path.endsWith("/customer") || path.endsWith("/pax")) {
+      await wait(50);
+      return undefined as T;
+    }
+    if (path.endsWith("/payment")) {
+      await wait(50);
+      return { data: "stub-client-secret" } as T;
+    }
+    if (path === "/v1/bookings" && method === "POST") {
+      const itineraryId = (opts.body as { itineraryId?: string } | undefined)?.itineraryId ?? "";
+      this.stubConfirmed.add(itineraryId);
+      await wait(90);
+      return { data: itineraryId } as T;
+    }
+    if (path === "/v1/quota") {
+      return { data: { remainingInWindow: 100, limitPerMinute: 100 } } as T;
+    }
+    throw new Error(`stubRequest: unhandled path ${method} ${path}`);
   }
 
   private async request<T>(
@@ -112,6 +200,8 @@ export class HofjClient {
       noRetry?: boolean;
     } = {},
   ): Promise<T> {
+    if (this.stub) return this.stubRequest<T>(method, path, { body: opts.body });
+
     const url = new URL(this.base + path);
     url.searchParams.set("brand", opts.brand ?? this.brand);
     url.searchParams.set("locale", this.locale);

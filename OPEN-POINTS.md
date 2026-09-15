@@ -43,6 +43,56 @@ gruppo ("700 euro in totale"), il sistema non lo accetta come budget a
 persona — chiede esplicitamente la cifra a testa, non divide per conto
 suo. Verificato dal vivo in entrambi i casi. Vedi `ARCHITECTURE.md`.
 
+## Il twist: 50.000 viaggiatori in 10 minuti, quota HOFJ 120/min (2026-09-15)
+
+Milestone git `pre-twist-scale-challenge` prima di iniziare. Fase 1
+(analisi, presentata e approvata) → Fase 2 (design: cache discovery-only
+con TTL + coalescing, gate di quota via una singola Durable Object
+(`hofj/quotaGate.ts`, token bucket a 100/min), classi di priorità P0
+critico/P2 opzionale/P3 discovery, backpressure onesta mai un 500) →
+Fase 3 (load test) → Fase 4 (implementazione). Dettaglio completo e
+motivazioni in `ARCHITECTURE.md`.
+
+**Nuovo terzo scenario k6** (`loadtest/scale-50k.js`, contro
+`wrangler.loadtest.jsonc` con `STUB_MODE: "1"`) — i due scenari esistenti
+in `booking-flow.js` restano invariati. Sotto stub, zero HOFJ/Stripe/AI
+reali: risponde esplicitamente al vincolo di Giuseppe di non toccare i
+bottleneck AI (Workers AI/i $5 di crediti Anthropic) durante questo
+specifico test.
+
+**Verificato dal vivo, non solo progettato**: burst di 60 conversazioni
+concorrenti → 41 prenotate, 19 con backpressure onesta (mai un
+fallimento), un retry su una di quelle 19 ha completato riusando lo
+stesso itineraryId/paymentIntentId (idempotenza confermata in pratica,
+non solo citata). Smoke a 600 viaggiatori/60s (saturazione deliberata):
+0 errori HTTP su 3454 richieste, cache che assorbe la quasi totalità
+delle ricerche ripetute (30 miss su centinaia di lookup). Un'attesa
+massima di 8s sul gate spingeva la latenza troppo in alto per un agente
+vocale — ridotta a 3s dopo aver visto il dato reale.
+
+**Gap di correttezza trovato implementando, non ipotizzato**: attendere
+quota prima di `confirmBooking` rende possibile un pagamento riuscito ma
+booking non confermato per motivi di quota — senza una guardia mirata,
+il turno successivo avrebbe riaperto un secondo carrello. Risolto con un
+controllo puntuale in `openRealCartAndAttemptPayment`, senza toccare il
+comportamento preesistente della riconferma prezzo-cambiato.
+
+**Run completo, 50.000 viaggiatori / 10 minuti, eseguito dal vivo**:
+142 prenotazioni reali completate, cache al 99,5% di hit/coalesce
+(167 miss su oltre 32.000 lookup), zero errori 500 applicativi (verificato
+nel log del server: solo 200 in uscita, mai altro). Il numero basso di
+prenotazioni non è un difetto: il confronto tra il picco di arrivo del
+test (~117 viaggiatori/s) e la quota reale HOFJ (100/min ≈ 1,7/s) mostra
+che nessuna architettura può far completare più di ~500 booking reali in
+10 minuti contro quel limite — l'architettura fa esattamente il suo
+lavoro onorando quella scarsità reale invece di fingerla, con
+backpressure onesta per tutti gli altri. **Nota separata e onesta**: il
+41,5% di richieste segnate "fallite" da k6 sono tutte "Network connection
+lost" lato `wrangler dev` locale (client e server sulla stessa macchina),
+non fallimenti applicativi — vedi `ARCHITECTURE.md` per il dettaglio e
+per l'idea di un run successivo contro un deploy reale, non ancora fatto
+senza consenso esplicito.
+
 ## Robustezza sul booking non verificabile (2026-09-15 ~00:20)
 
 Due mancanze reali, corrette: (1) "riprova" non aveva limite anche su un
