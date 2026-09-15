@@ -1703,6 +1703,40 @@ riempie sempre tutti gli slot per qualunque testo non-DSL, quindi ora
 serve "noop:1" per rappresentare davvero "niente di nuovo detto").
 Typecheck pulito, 82 test passano.
 
+### Un vero 500 in produzione, trovato entro pochi minuti dal deploy, sulla stessa sessione reale (2026-09-15)
+
+Subito dopo il deploy della feature sopra, verifica dal vivo sulla
+STESSA sessione `ab6d0bfa-...` (non un test sintetico): la richiesta di
+un nuovo viaggio genuino restituiva un errore Cloudflare `1101`
+("Worker threw a JavaScript exception"), non la riapertura attesa.
+Confermato con `wrangler tail` + una chiamata reale, non ipotizzato.
+
+**Causa**: lo stato di QUELLA conversazione era stato salvato prima di
+oggi — non aveva ancora i campi nuovi (`pastBookings`,
+`lastDateOverlapWarning`, `budgetTierFromProfileDefault`, quest'ultimo
+aggiunto già in un fix precedente nella stessa giornata). `loadState()`
+faceva `stored ?? initialState()`: utile solo per una conversazione
+mai esistita, ma per una già persistita restituiva l'oggetto esattamente
+come salvato — campi mancanti restavano `undefined` per sempre, non
+`null`. `tryStartNewTripAfterTerminal` chiamava
+`state.pastBookings.push(...)` su `undefined` → eccezione reale.
+
+**Fix, generale non puntuale**: `loadState()` ora fa
+`{ ...initialState(), ...stored }` — i default di uno stato nuovo
+riempiono qualunque campo assente in uno vecchio, i valori realmente
+persistiti vincono sempre dove presenti. Copre automaticamente anche i
+PROSSIMI campi che lo stato di questa conversazione dovesse guadagnare
+(già cresciuto tre volte in una singola giornata di sessione), non solo
+questi tre. Ri-deployato e riverificato dal vivo sulla stessa identica
+sessione reale: la richiesta di viaggio ora riapre correttamente la
+conversazione, con `pastBookings` popolato dalla prenotazione
+precedente e i dati del viaggiatore/profilo intatti.
+
+Nessun test di regressione dedicato per questo caso specifico (serve
+uno stato persistito con la vecchia forma, non facilmente isolabile
+senza un metodo di test-only sul DO) — verificato invece dal vivo,
+due volte, sulla stessa sessione reale che lo aveva causato.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

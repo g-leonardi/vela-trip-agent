@@ -30,6 +30,19 @@ futuro db profilazione, stesso limite già noto per `economicTierHint`).
 
 3 nuovi test, 82 test passano. Dettaglio completo in `ARCHITECTURE.md`.
 
+## Un vero 500 in produzione, trovato e chiuso entro pochi minuti dal deploy sopra (2026-09-15)
+
+Verifica dal vivo subito dopo il deploy, sulla STESSA sessione
+`ab6d0bfa-...`: errore reale (Cloudflare 1101), non l'esito atteso.
+Causa: il suo stato era stato salvato prima di oggi, senza i campi
+nuovi (`pastBookings` e non solo) — `loadState()` restituiva l'oggetto
+vecchio così com'era, campi mancanti `undefined` per sempre, e
+`state.pastBookings.push(...)` crashava. Fix generale (non solo per
+questi tre campi): `loadState()` ora riempie da `initialState()` ogni
+campo assente nel documento persistito, mai il contrario. Ri-deployato
+e riverificato dal vivo sulla stessa sessione: ora funziona. Dettaglio
+in `ARCHITECTURE.md`.
+
 ## Profilo non ri-richiesto (non è un bug, è `localStorage`) + il suo segnale di budget non arrivava alla selezione (questo sì, corretto) (2026-09-15)
 
 Giuseppe, riguardando `ab6d0bfa-...`: perché il profilo (sport/nucleo
