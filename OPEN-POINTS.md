@@ -729,14 +729,17 @@ per il dettaglio ed esempi reali verificati.
 
 ## Deliverable ancora aperti
 
-- **Video 3-5 minuti** dell'acquisto reale end-to-end — non ancora
-  registrato.
+- **Video 3-5 minuti** dell'acquisto reale end-to-end — **l'unico
+  deliverable ufficiale rimasto davvero aperto** a fine sessione;
+  Giuseppe lo sta montando fuori da questa sessione (2026-09-15).
 - ~~Key hunt oltre alla chiave 1~~ — **fatto da Giuseppe fuori da questa
-  sessione**, tutte trovate.
-- **Export finale di `/agent-log/`** — aggiornato periodicamente durante
-  la sessione, va rifatto un'ultima volta a ridosso della consegna vera
-  (redazione chiave HOFJ + chiave Stripe, entrambe già verificate assenti
-  nelle versioni committate finora).
+  sessione**, tutte e 5 trovate (dettaglio in `KEY-HUNT.md`).
+- ~~Export finale di `/agent-log/`~~ — **fatto**: ultimo refresh
+  2026-09-15 (commit `3567f6b`), redazione esaustiva a sliding-window
+  (8 caratteri su ogni segreto, 6 sui due API key grezzi), ogni riga
+  ri-validata come JSON parsabile dopo la redazione — 0 frammenti
+  residui, 0 righe invalide, verificato con uno script indipendente,
+  non a occhio.
 
 ## Near-miss di sicurezza, risolto (2026-09-15 ~17:00)
 
@@ -755,16 +758,24 @@ non solo match esatti.
 
 ## Limiti di scope accettati consapevolmente (documentati in ARCHITECTURE.md, non bug)
 
-- Nessun test diretto su `conversation.ts` (la Durable Object) — solo
-  validazione dal vivo, documentata come scelta esplicita.
+- ~~Nessun test diretto su `conversation.ts`~~ — **superato**: da
+  "Test deterministici su conversation.ts" (2026-09-15) esiste
+  `test/conversation.test.ts`, integrazione reale contro la vera
+  `ConversationDO` via `STUB_MODE`, cresciuta a 82 test totali nel
+  resto della sessione. Voce lasciata qui solo per chi legge questo
+  file dall'alto — la cronologia vera, con le date, è in
+  `ARCHITECTURE.md`.
 - Nessuno step conversazionale per scegliere hotel/camera alternativi
   (violerebbe comunque il vincolo "mai una lista").
 - Indirizzo di fatturazione ridotto al minimo (street1/postalCode
   placeholder), non chiesto a voce.
 - `rooms = ceil(adults/2)` è una stima, non uno step dedicato di
   configurazione stanze.
-- Nessuna ripresa automatica di una conversazione "failed" (l'itineraryId
-  resta in stato, ma non c'è retry asincrono/notifica).
+- Nessuna ripresa AUTOMATICA (server-side, senza un nuovo messaggio del
+  viaggiatore) di una conversazione "failed" — resta vero anche dopo il
+  fix del 2026-09-15 sul vicolo cieco post-prenotazione: quel fix fa
+  ripartire la conversazione SOLO quando il viaggiatore stesso scrive
+  qualcosa di nuovo, mai da solo in background/per notifica.
 
 ## Da tenere d'occhio
 
