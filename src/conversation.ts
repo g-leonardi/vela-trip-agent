@@ -916,6 +916,25 @@ export class ConversationDO extends DurableObject<Env> {
         state.stage = "collecting_traveller";
         return this.say(state, { kind: "ask_traveller_field", field: "firstName", isFirstAsk: false, correction: true });
       }
+      // Any OTHER HofjApiError here (the exact "changePaxDetails.
+      // paxNumberChanged" case flagged in the comment above arrived as a
+      // generic 502, not 400) isn't about the traveller's data at all —
+      // it's the product's own configuration. Re-asking for the same
+      // name/email/phone would never fix that, it would just loop.
+      // "Not every product is bookable... handle it" (the brief's own
+      // words, per Giuseppe, 2026-09-15) — same fallback discipline
+      // already applied to createItinerary's and getItinerary's own
+      // failures: reject this specific product, clear the now-abandoned
+      // cart, and propose the next best alternative with the real reason.
+      if (err instanceof HofjApiError) {
+        console.error("putCustomer/putPax failed (non-400, likely a product config problem):", err.status, err.detail.slice(0, 300));
+        state.rejectedProductIds.push(candidate.productId);
+        state.proposal = null;
+        state.itineraryId = null;
+        state.brand = null;
+        state.stage = "collecting";
+        return this.searchAndPropose(state, "unavailable", err.detail.slice(0, 200));
+      }
       throw err;
     }
 

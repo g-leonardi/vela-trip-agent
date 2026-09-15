@@ -138,6 +138,22 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r2.state.stage).toBe("booked");
   });
 
+  it("pax_config_broken scenario: a non-400 putPax failure (the product's OWN config, not the traveller's data) rejects the product instead of pointlessly re-asking for name/email/phone again", async () => {
+    const stub = freshConversation();
+    await stub.handleMessage(`${tripDsl("|preferences:SCENARIO:pax_config_broken")}|${TRAVELLER_DSL}`);
+    const r1 = await stub.handleMessage("decision:yes");
+    expect(r1.state.stage).toBe("proposing");
+    expect(r1.state.proposal?.candidate.productId).not.toBe("9007");
+    expect(r1.state.rejectedProductIds).toContain("9007");
+    expect(r1.state.itineraryId).toBeNull();
+    // Crucially, unlike customer_rejected: traveller data survives
+    // untouched — it was never the actual problem, so it's never wiped.
+    expect(r1.state.traveller.firstName).toBe("Mario");
+
+    const r2 = await stub.handleMessage("decision:yes");
+    expect(r2.state.stage).toBe("booked");
+  });
+
   it("unavailable scenario (requested date == the scenario's own minDate, isolating this branch from the date-fallback one): rejects the original package for a REAL reason and finds a genuine alternative", async () => {
     const stub = freshConversation();
     // 1 gennaio 2026 matches STUB_SCENARIOS.unavailable's own minDate —

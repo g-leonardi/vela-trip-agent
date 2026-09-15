@@ -1298,6 +1298,71 @@ completa comunque sul prodotto alternativo.
 
 Typecheck pulito, 77 test passano (76 + 1 nuovo).
 
+### Perché questo caso contava così tanto: un vincolo esplicito del brief, non solo robustezza — e un secondo gap dello stesso tipo trovato riguardandolo (2026-09-15)
+
+Giuseppe, subito dopo: il motivo della richiesta di verifica sopra non
+era genericamente "rendiamo il sistema più robusto" — è una frase
+esplicita del testo originale della challenge (dalla sessione privata,
+mai incollata qui prima d'ora):
+
+> "Not every product is bookable. Some of the catalogue is misconfigured
+> upstream and will fail when you try to put it in a cart. Handle it.
+> Real inventory is like this."
+
+Questo cambia il framing: non è un miglioramento opzionale, è un
+requisito esplicito della challenge — il catalogo HOFJ CONTIENE
+deliberatamente prodotti con configurazione rotta, e il compito è
+gestirli con grazia, non solo essere "abbastanza robusti da non
+crashare". Dato questo, prima di considerare il punto chiuso ho
+riguardato l'intera pipeline di booking per cercare ALTRI punti dove un
+prodotto realmente rotto (non solo dati del viaggiatore malformati)
+potesse ancora cadere nel percorso generico "problema tecnico, riprova
+con una nuova conversazione" invece di essere scartato con
+un'alternativa proposta.
+
+**Trovato un secondo gap dello stesso tipo, anticipato ma mai gestito
+nel codice stesso**: il catch di `putCustomer`/`putPax` gestiva
+solo `err.status === 400` (dati viaggiatore malformati → richiedi di
+nuovo). Qualunque ALTRO errore (403, 404, 502...) cadeva nel `throw err`
+finale — e il commento IMMEDIATAMENTE sopra quella chiamata, scritto in
+una sessione precedente, documenta ESATTAMENTE un caso reale di questo
+tipo: `"changePaxDetails.paxNumberChanged"`, un problema di
+configurazione del PRODOTTO (non dei dati inviati), "surfaced through
+the gateway as a generic 502" — non un 400. Il codice descriveva il
+problema nel proprio commento senza gestirlo.
+
+**Perché ri-richiedere gli stessi dati non avrebbe mai funzionato in
+questo caso**: se il problema è nella configurazione pax del prodotto
+stesso, richiedere di nuovo nome/email/telefono al viaggiatore non
+cambia nulla — l'errore si ripresenterebbe identico ad ogni tentativo,
+indipendentemente da quanto corretti siano i dati forniti.
+
+**Corretto con lo stesso meccanismo, ancora una volta**: un secondo
+branch nel catch, per qualunque `HofjApiError` diverso da 400 — scarta
+il prodotto, pulisce il carrello abbandonato, propone l'alternativa con
+la motivazione reale. **Deliberatamente non tocca `state.traveller`** —
+a differenza del ramo 400, qui i dati del viaggiatore non erano mai il
+problema, quindi non vanno persi e richiesti di nuovo inutilmente.
+
+**Nuovo scenario stub** `pax_config_broken` (`hofj/client.ts`) — fedele
+al caso reale già documentato nel commento: `putPax` fallisce sempre con
+un 502 "changePaxDetails.paxNumberChanged", mai un 400, mai
+autocorrettivo. Test dedicato verifica: il prodotto viene scartato, il
+carrello ripulito, **i dati del viaggiatore sopravvivono intatti**
+(la differenza chiave rispetto al ramo 400), e la prenotazione si
+completa comunque sull'alternativa.
+
+Nessun'altra chiamata nella pipeline di booking ha lo stesso gap:
+`createItinerary` e `getItinerary` sono già coperti (sopra);
+`getProduct` degrada già con onestà su qualunque errore;
+`getPaymentIntent` è già opzionale/scartabile; `confirmBooking` è
+l'ultimo passo dopo un pagamento reale, dove "scarta e prova un altro
+prodotto" non è più applicabile (il fallimento onesto + follow-up già
+implementato resta la risposta corretta lì, indipendentemente dalla
+causa).
+
+Typecheck pulito, 78 test passano (77 + 1 nuovo).
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

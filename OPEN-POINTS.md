@@ -3,6 +3,26 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Vincolo esplicito del brief + secondo gap trovato riguardando tutta la pipeline (2026-09-15)
+
+Giuseppe ha chiarito perché il caso `productId 19` contava così tanto:
+è testo ESPLICITO della challenge (sessione privata) — "Not every
+product is bookable. Some of the catalogue is misconfigured upstream
+and will fail when you try to put it in a cart. Handle it. Real
+inventory is like this." Non un miglioramento opzionale, un requisito
+diretto.
+
+Riguardata l'intera pipeline con questo in mente: trovato un secondo
+gap identico nello spirito — il catch di `putCustomer`/`putPax`
+gestiva solo i 400 (dati viaggiatore), qualunque altro errore
+(inclusa `"changePaxDetails.paxNumberChanged"`, un problema di
+CONFIGURAZIONE DEL PRODOTTO già documentato in un commento del codice
+stesso, mai gestito) cadeva nel percorso generico. Corretto con lo
+stesso meccanismo (scarta il prodotto, pulisci il carrello, proponi
+l'alternativa) — ma senza toccare i dati del viaggiatore, che qui non
+erano mai il problema. Nuovo scenario stub `pax_config_broken` + test.
+78 test passano (77 + 1). Dettaglio in `ARCHITECTURE.md`.
+
 ## Terzo caso reale di prodotto rotto: gap in getItinerary, stesso fix già esistente (2026-09-15)
 
 Giuseppe: `productId 19` ("M3 Padel Week", produzione) — `createItinerary`

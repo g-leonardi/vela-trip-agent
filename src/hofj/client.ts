@@ -119,6 +119,15 @@ const STUB_SCENARIOS = {
   // always-succeeding product for the automatic retry to find, same
   // pattern as "unavailable" above.
   broken_product_config: { productId: 9006, minDate: "2026-01-01", maxDate: "2027-12-31" },
+  // createItinerary and getItinerary both succeed (price verified fine),
+  // but putCustomer always fails with a non-400 error — the real,
+  // previously-observed case this mirrors ("changePaxDetails.
+  // paxNumberChanged", surfaced upstream as a generic 502, see the
+  // comment above openRealCartAndAttemptPayment's putPax call,
+  // conversation.ts) is the product's OWN pax/customer configuration,
+  // not bad traveller data — exercises the non-400 branch of that
+  // method's catch, distinct from customer_rejected's 400/one-time case.
+  pax_config_broken: { productId: 9007, minDate: "2026-01-01", maxDate: "2027-12-31" },
 } as const;
 
 function findScenarioByKeyword(keyword: string | undefined): keyof typeof STUB_SCENARIOS | null {
@@ -238,18 +247,15 @@ export class HofjClient {
         maxDate: cfg.maxDate,
         defaultDurationInDays: 3,
       };
-      // "unavailable" and "broken_product_config" both end in this
-      // product being rejected and a retry search firing — pair each
-      // with the plain default product (ranked second) so that retry
-      // actually finds something, same as a real "original truly
-      // unbookable" recovery.
-      const products =
-        scenario === "unavailable" || scenario === "broken_product_config"
-          ? [
-              scenarioProduct,
-              { ...scenarioProduct, productId: 1, title: "Stub Tennis Package (fallback)" },
-            ]
-          : [scenarioProduct];
+      // "unavailable", "broken_product_config" and "pax_config_broken"
+      // all end in this product being rejected and a retry search
+      // firing — pair each with the plain default product (ranked
+      // second) so that retry actually finds something, same as a real
+      // "original truly unbookable" recovery.
+      const REJECTS_TO_FALLBACK: (keyof typeof STUB_SCENARIOS)[] = ["unavailable", "broken_product_config", "pax_config_broken"];
+      const products = scenario && REJECTS_TO_FALLBACK.includes(scenario)
+        ? [scenarioProduct, { ...scenarioProduct, productId: 1, title: "Stub Tennis Package (fallback)" }]
+        : [scenarioProduct];
       return { data: { total: products.length, products } } as T;
     }
 
@@ -327,7 +333,19 @@ export class HofjClient {
       return undefined as T;
     }
     if (path.endsWith("/pax")) {
+      const itineraryId = path.split("/")[3]!;
+      const info = this.stubItineraries.get(itineraryId);
       await wait(50);
+      // Mirrors the real, previously-observed case (see the comment
+      // above openRealCartAndAttemptPayment's putPax call,
+      // conversation.ts): "changePaxDetails.paxNumberChanged", a
+      // product-level configuration problem, surfaced as a generic 502
+      // — not a 400, and never self-corrects on retry (unlike
+      // customer_rejected above), because the traveller's data was
+      // never the problem.
+      if (info?.scenario === "pax_config_broken") {
+        throw new HofjApiError(502, "changePaxDetails.paxNumberChanged (stub: pax_config_broken scenario, always fails)", true);
+      }
       return undefined as T;
     }
 
