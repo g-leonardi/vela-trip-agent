@@ -48,7 +48,7 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     scegliere tra hotel alternativi (violerebbe comunque il vincolo "mai
     una lista tra cui scegliere" — coerente con lo scope, non solo un
     taglio per il tempo).
-  - **Test diretti su `conversation.ts`**: le 27 unit test in `test/`
+  - ~~**Test diretti su `conversation.ts`**: le 27 unit test in `test/`
     coprono `engine/matcher.ts`, `engine/dates.ts` e `hofj/client.ts` —
     tutta la logica pura/deterministica, dove i test hanno più valore e
     zero costo/rischio (nessuna chiamata AI o HOFJ reale). La Durable
@@ -58,17 +58,23 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
     proxy remoto che ha già rallentato la suite una volta — vedi commit
     "unblock test suite from remote AI proxy"), oppure disaccoppiare
     l'AI/HOFJ client con dependency injection solo per testabilità, un
-    refactor non banale a questo punto della sessione. Scelta consapevole:
-    la macchina a stati è stata validata con test end-to-end reali dal
-    vivo (multi-turno, rinegoziazione budget a metà proposta, rifiuto e
-    proposta successiva, re-verifica silenziosa che cattura un prezzo
-    cambiato davvero) — visibili come traffico reale in `/agent-log/`, non
-    solo dichiarati qui. Aggiunta successivamente (2026-09-14 ~19:30) una
-    copertura reale, anche se non in CI, dello strato NLU
-    (`scripts/prompt-suite.mjs` — vedi sotto): non elimina il gap sulla DO
-    nel suo insieme, ma copre esattamente la parte più a rischio e meno
-    testabile deterministicamente, cioè quello che l'AI estrae davvero da
-    una frase reale.
+    refactor non banale a questo punto della sessione.~~ **SUPERATO
+    2026-09-15**: da "Test deterministici su conversation.ts/la macchina
+    a stati, riusando STUB_MODE" (sezione 4) esiste `test/conversation.test.ts`,
+    integrazione reale contro la vera `ConversationDO` — non un mock, non
+    un refactor per testabilità: `STUB_MODE` sostituisce
+    AI/HOFJ/Stripe con risposte deterministiche a livello di client,
+    lasciando la DO stessa intatta. Cresciuta a 82 test totali nel resto
+    della sessione. Fino a quel punto, comunque: la macchina a stati era
+    stata validata con test end-to-end reali dal vivo (multi-turno,
+    rinegoziazione budget a metà proposta, rifiuto e proposta successiva,
+    re-verifica silenziosa che cattura un prezzo cambiato davvero) —
+    visibili come traffico reale in `/agent-log/`, non solo dichiarati
+    qui. Aggiunta anche (2026-09-14 ~19:30) una copertura reale, anche se
+    non in CI, dello strato NLU (`scripts/prompt-suite.mjs` — vedi sotto),
+    che resta complementare ai test deterministici, non sostituita da
+    essi: copre esattamente la parte che `STUB_MODE` non tocca per
+    definizione, cioè quello che l'AI estrae davvero da una frase reale.
   - **Apertura carrello reale prima della proposta (invece che dopo la
     conferma)**: valutata e scartata esplicitamente da Giuseppe
     (2026-09-14 ~18:00), non solo rimandata. L'architettura resta
@@ -1843,7 +1849,10 @@ per filtrare un sottoinsieme.
 
 **12 casi**, quasi tutti presi da conversazioni reali già testate in
 questa sessione (sessionId `81992bfd-...`, la target customer journey
-inglese, `verify-stripe-01`, ecc.) — non inventati apposta per far
+inglese — entrambe introdotte più sotto, in "Cinque richieste di
+Giuseppe dopo un test dal vivo in inglese sulla customer journey
+target" e nei bug trovati ritestandole, sezione 5 — e `verify-stripe-01`,
+ecc.) — non inventati apposta per far
 passare il test, ma le stesse identiche frasi che avevano già causato bug
 reali oggi (il range di date "dal 15 al 21 settembre", "9/10/2026", "il 9
 di ottobre", "budget illimitato", "il miglior insegnante... in Nord
