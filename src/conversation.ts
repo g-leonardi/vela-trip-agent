@@ -36,6 +36,16 @@ const BUDGET_LOOP_BREAKER = 1; // ask once; if still unanswered next time, decid
 // standing fault, not a blip.
 const BOOKING_RETRY_LIMIT = 2;
 
+// Same three-way idea, two vocabularies (see hintFor()'s "budget" case for
+// the traveller-facing phrasing of each). Used ONLY as the fallback when
+// BUDGET_LOOP_BREAKER bypasses a genuinely unanswered budget question —
+// never overrides an explicit slots.budget/budgetTier the traveller gave.
+const ECONOMIC_TIER_TO_BUDGET_TIER: Record<"smart" | "pro" | "luxury", Slots["budgetTier"]> = {
+  smart: "low",
+  pro: "mid",
+  luxury: "high",
+};
+
 function initialState(): ConversationState {
   return {
     // Traveller data is collected FIRST, before any trip talk — decision
@@ -74,6 +84,7 @@ function initialState(): ConversationState {
     budgetAskAttempts: 0,
     householdSizeHint: null,
     economicTierHint: null,
+    budgetTierFromProfileDefault: false,
     preferredSportHint: null,
     productDescription: null,
     bookingRetryCount: 0,
@@ -488,7 +499,23 @@ export class ConversationDO extends DurableObject<Env> {
     // found reading the code, not guessed: verified live that a
     // conversation reached "proposing" with adults still null.
     for (const key of REQUIRED_TRIP_SLOTS) {
-      if (this.isGatingSatisfied(state, key)) continue;
+      if (this.isGatingSatisfied(state, key)) {
+        // The ONLY way this is true for "budget" with both
+        // slots.budget/budgetTier still null is the loop-breaker itself
+        // (see isGatingSatisfied) — i.e. the traveller genuinely never
+        // answered. Silently defaulting to "cheapest" from there regardless
+        // of a known "luxury" profile was the exact gap Giuseppe found live
+        // 2026-09-15 ("un luxury... voglia sempre la soluzione più
+        // inclusiva. Questa logica si è persa?"). Fill it from the profile
+        // hint instead when there is one — still just a suggestion, always
+        // disclosed as a compromise in searchAndPropose() below, never
+        // treated as if the traveller had said it themselves.
+        if (key === "budget" && state.slots.budget === null && state.slots.budgetTier === null && state.economicTierHint !== null) {
+          state.slots.budgetTier = ECONOMIC_TIER_TO_BUDGET_TIER[state.economicTierHint];
+          state.budgetTierFromProfileDefault = true;
+        }
+        continue;
+      }
       if (key === "city") state.cityAskAttempts += 1;
       if (key === "budget") state.budgetAskAttempts += 1;
       return this.say(state, { kind: "ask_slot", missing: key, hint: this.hintFor(state, key) });
@@ -543,6 +570,21 @@ export class ConversationDO extends DurableObject<Env> {
       throw err;
     }
     let ctx = classify(state.slots, candidates, state.rejectedProductIds, locationMatched);
+
+    // Consumed exactly once — see runCollecting()'s doc for how it got
+    // set. Only surfaced when it actually decided something (ctx.compromise
+    // already null, i.e. otherwise an "exact" match): a genuine price/date
+    // compromise on top takes priority in the reply rather than stacking
+    // two disclosures into one message.
+    if (ctx && ctx.compromise === null && state.budgetTierFromProfileDefault) {
+      const labels = { smart: "economico", pro: "una via di mezzo", luxury: "il top di gamma" } as const;
+      ctx = {
+        ...ctx,
+        category: "compromise",
+        compromise: { kind: "budget_profile_default", requested: "", offered: labels[state.economicTierHint!] },
+      };
+    }
+    state.budgetTierFromProfileDefault = false;
 
     // Nothing at all matched what was asked. Before giving up, try the
     // traveller's own historically-preferred sport (a real profile

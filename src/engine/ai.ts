@@ -416,6 +416,9 @@ function directiveToInstruction(d: SayDirective): string {
       if (c.kind === "budget_unspecified") {
         return `${base} Il viaggiatore non ti ha mai detto un budget. Diglielo con naturalezza — non è un problema, hai scelto tu il pacchetto più economico tra quelli pertinenti, a ${c.offered} — e chiedi conferma o se preferisce dirti un budget preciso.`;
       }
+      if (c.kind === "budget_profile_default") {
+        return `${base} Il viaggiatore non ti ha mai detto un budget preciso in QUESTA conversazione, ma dal suo profilo salvato sai che di solito preferisce fascia "${c.offered}" — hai usato quello, invece di scegliere il più economico come faresti senza questa informazione. Diglielo con naturalezza (es. "visto che di solito preferisci qualcosa sulla fascia ${c.offered}, ti propongo questo" ) — non è un problema, e chiedi conferma o se preferisce indicarti un budget diverso stavolta.`;
+      }
       if (c.kind === "sport_substituted") {
         return `${base} IMPORTANTE: il viaggiatore aveva chiesto "${c.requested}", ma non hai trovato NULLA che corrisponda per quello sport in quella città/periodo — quindi hai provato con "${c.offered}", che sai dal suo profilo essere uno sport che ama comunque. Dillo con chiarezza e onestà (es. "non ho trovato nulla per il ${c.requested}, ma so che ti piace anche il ${c.offered} e ho trovato questo — ti interessa?"), MAI presentarlo come se fosse quello che aveva chiesto. Chiedi conferma esplicita, e lascia capire che puoi comunque continuare a cercare ${c.requested} altrove se preferisce.`;
       }

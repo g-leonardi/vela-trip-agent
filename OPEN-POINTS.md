@@ -3,6 +3,31 @@
 > File di lavoro, non un deliverable ufficiale — serve a non perdere il filo
 > tra un giro di test e l'altro. Aggiornato via via, non a fine sessione.
 
+## Profilo non ri-richiesto (non è un bug, è `localStorage`) + il suo segnale di budget non arrivava alla selezione (questo sì, corretto) (2026-09-15)
+
+Giuseppe, riguardando `ab6d0bfa-...`: perché il profilo (sport/nucleo
+familiare/budget) non gli è stato richiesto di nuovo cancellando la
+sessione, e se questi segnali informano davvero la scelta del
+pacchetto per un profilo "luxury" senza budget esplicito.
+
+**Non un bug**: `userId` (chiave `rally.userId.v1`) vive in
+`localStorage` separato dalla sessione di conversazione
+(`SESSION_KEY`) — cancellare la sessione non cancella il profilo.
+Comportamento per design; serve pulire anche `rally.userId.v1` per
+rifar partire l'onboarding in una prova.
+
+**Bug reale, corretto**: `economicTierHint` influenzava SOLO il
+fraseggio della domanda (`hintFor()`), mai `classify()` — se il
+loop-breaker del budget scattava senza risposta, il sistema sceglieva
+sempre il più economico anche per un profilo "luxury" noto. Fix in
+`runCollecting()`: scrive `slots.budgetTier` dalla mappatura
+`smart→low/pro→mid/luxury→high` quando il loop-breaker scatta E non
+c'è stata risposta esplicita — sempre dichiarato al viaggiatore come
+compromesso (`budget_profile_default`, mai spacciato per una risposta
+sua). `adults` verificato: nessun gap analogo, non ha loop-breaker,
+viene sempre richiesto finché non risponde. Nuovo test dedicato, 79
+test passano. Dettaglio completo in `ARCHITECTURE.md`.
+
 ## Sessione reale `ab6d0bfa-...`: tre segnalazioni, tre esiti diversi (2026-09-15)
 
 **1. Dati chiesti "dopo" — bug reale trovato**: un compromesso di prezzo

@@ -204,6 +204,37 @@ describe("ConversationDO state machine (STUB_MODE integration tests)", () => {
     expect(r.state.failureReason).toContain("BookingInitiated");
   });
 
+  it("never answering the budget question fills it from the profile's economicTier instead of silently assuming 'cheapest' (Giuseppe, 2026-09-15: 'un luxury... voglia sempre la soluzione più inclusiva'), and discloses it as a compromise", async () => {
+    const stub = freshConversation();
+    const profile: UserProfile = {
+      firstName: null,
+      email: null,
+      city: null,
+      preferredSport: null,
+      householdSize: null,
+      economicTier: "luxury",
+    };
+    // No "budget"/"budgetTier" key anywhere below — genuinely never answered.
+    const r1 = await stub.handleMessage(
+      `sport:tennis|destCity:Roma|dateFrom:25 settembre 2026|adults:1|${TRAVELLER_DSL}`,
+      profile,
+    );
+    expect(r1.state.stage).toBe("collecting");
+    expect(r1.state.slots.budget).toBeNull();
+    expect(r1.state.slots.budgetTier).toBeNull();
+    expect(r1.state.budgetAskAttempts).toBe(1); // BUDGET_LOOP_BREAKER — asked once so far
+
+    // Still no answer on the next turn — the loop-breaker now bypasses it.
+    const r2 = await stub.handleMessage("noop:1");
+    expect(r2.state.stage).toBe("proposing");
+    expect(r2.state.slots.budgetTier).toBe("high"); // luxury -> high, never silently "cheapest"
+    expect(r2.state.proposal?.category).toBe("compromise");
+    expect(r2.state.proposal?.compromise?.kind).toBe("budget_profile_default");
+    // Consumed, not sticky — a later, unrelated proposal in this same
+    // conversation must not keep re-disclosing a stale compromise.
+    expect(r2.state.budgetTierFromProfileDefault).toBe(false);
+  });
+
   it("a conversation already in the terminal 'booked' stage doesn't restart the flow on a new message", async () => {
     const stub = freshConversation();
     await stub.handleMessage(`${tripDsl()}|${TRAVELLER_DSL}`);

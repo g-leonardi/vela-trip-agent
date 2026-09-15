@@ -1541,6 +1541,83 @@ Typecheck pulito, 78 test passano (incluso un nuovo test dedicato che
 verifica esplicitamente il riuso del carrello: stesso `itineraryId`
 prima e dopo la riconferma di un compromesso di prezzo).
 
+### Il profilo non veniva più richiesto (non è un bug), e il suo segnale di budget non arrivava mai alla selezione (questo sì) (2026-09-15)
+
+Giuseppe, riguardando la sessione `ab6d0bfa-...`: "si era detto che ad
+inizio del DO se non si conoscevano i dati dell'utente si chiedevano...
+Questi dati non mi sono stati piu richiesti ad apertura sessione
+nonostante cancellassi dalla sessione il durable object... Questi dati
+non vanno a potenziare il motore decisionale tra le varie offerte?...
+un utente luxury, se non propone specificamente un budget, voglia
+sempre la soluzione piu inclusiva... Questa logica si è persa?"
+
+Due domande distinte, due risposte diverse, entrambe verificate
+leggendo il codice reale (mai per ipotesi):
+
+**1. Perché non è stato richiesto di nuovo — non è un bug.**
+L'onboarding del profilo (`userProfile.ts`, `UserProfileDO`) è
+completamente separato dalla conversazione: vive per `userId`, non per
+`sessionId`. Il frontend (`public/index.html`) persiste `userId` in
+`localStorage` sotto la chiave `rally.userId.v1`, DISTINTA dalla chiave
+della sessione di conversazione (`SESSION_KEY`). Cancellare la sessione
+della conversazione dal browser azzera solo `SESSION_KEY` — non tocca
+`rally.userId.v1` — quindi al prossimo `GET /api/profile?userId=...` il
+profilo risulta ancora completo e l'onboarding correttamente non
+riparte. Per far ripartire l'onboarding in una prova live serve pulire
+ANCHE `rally.userId.v1` da `localStorage` (o usare una finestra/profilo
+browser pulito). Comportamento corretto per design — un utente reale
+che apre l'app su un nuovo dispositivo, invece, vedrebbe l'onboarding
+partire regolarmente, non avendo ancora quel valore in `localStorage`.
+
+**2. Il gap reale, confermato leggendo `runCollecting()`
+(`conversation.ts`).** `householdSizeHint`/`economicTierHint`, seminati
+una volta dal profilo salvato, venivano usati SOLO per il fraseggio
+della domanda (`hintFor()` — "di solito spendi sulla fascia X, ancora
+così?"), MAI per la selezione vera e propria: `classify()`
+(`engine/matcher.ts`) riceve solo `Slots`, mai gli hint. Quando
+`BUDGET_LOOP_BREAKER` (1 tentativo) bypassava una domanda sul budget
+mai risposta, il codice si limitava a passare oltre senza mai scrivere
+`slots.budgetTier` — che restava `null` — e `wantsCheapest` in
+`classify()` degradava sempre al più economico, **a prescindere** da un
+profilo "luxury" noto. Esattamente il gap descritto da Giuseppe.
+
+**Fix** (`conversation.ts`, `types.ts`, `engine/ai.ts`): quando
+`runCollecting()` bypassa il budget per loop-breaker E
+`state.economicTierHint` non è null E sia `slots.budget` sia
+`slots.budgetTier` sono ancora `null` (mai una risposta esplicita), il
+codice ora scrive `slots.budgetTier` dalla mappatura
+`smart→low, pro→mid, luxury→high` (stesso vocabolario già usato da
+`hintFor()`) invece di lasciarlo `null`. Questo alimenta `classify()`
+esattamente come se il viaggiatore avesse risposto — nessuna modifica a
+`matcher.ts` è servita. Per rispettare la policy di precisione già in
+vigore su budget/adults ("mai deciso in silenzio" — vedi più sotto,
+sezione "Metodo agentico"), il fatto che sia stato il profilo a
+decidere, non il viaggiatore in questa conversazione, viene sempre
+dichiarato: un nuovo flag one-shot `budgetTierFromProfileDefault`
+(consumato e resettato subito dopo la classificazione, per non
+"restare appiccicato" a una proposta successiva non correlata) fa
+avvolgere il risultato in un nuovo tipo di compromesso,
+`budget_profile_default` (`ProposalContext.compromise.kind`,
+`types.ts`), con un fraseggio dedicato in `engine/ai.ts`
+("visto che di solito preferisci la fascia X, ti propongo questo..." —
+mai presentato come se il viaggiatore l'avesse appena detto). Se
+emerge anche un compromesso "vero" (prezzo/data) sullo stesso
+candidato, quello ha priorità nel messaggio — non si sommano due
+dichiarazioni nello stesso turno.
+
+**Fuori scope, verificato e scartato**: un gap analogo per `adults`
+NON esiste — a differenza del budget, il campo adults non ha MAI un
+loop-breaker (`REQUIRED_TRIP_SLOTS`/`isGatingSatisfied`,
+`conversation.ts`): viene richiesto a oltranza finché il viaggiatore
+non risponde con un numero, mai deciso in silenzio da un hint. Nessuna
+modifica necessaria lì.
+
+Nuovo test dedicato in `test/conversation.test.ts` che riproduce
+esattamente lo scenario di Giuseppe (profilo `economicTier: "luxury"`,
+budget mai indicato in conversazione, loop-breaker che scatta al
+secondo turno) e verifica sia `slots.budgetTier === "high"` sia il
+compromesso dichiarato. Typecheck pulito, 79 test passano.
+
 ## 4. Metodo agentico (15%)
 
 - **Agenti/tool usati**: Claude Code, un'unica sessione pubblica continua

@@ -220,10 +220,24 @@ export interface ProposalContext {
    * substituted one. Only ever a disclosed, confirmable suggestion, same
    * precision policy as every other compromise — never applied silently,
    * and never retried a second time if rejected (see
-   * ARCHITECTURE.md). */
+   * ARCHITECTURE.md).
+   * "budget_profile_default": the traveller never answered the budget
+   * question at all (BUDGET_LOOP_BREAKER, conversation.ts) and the
+   * profile's own economicTierHint was used INSTEAD of the old silent
+   * "assume cheapest" default — still just a suggestion, still disclosed
+   * here, never treated as if the traveller had actually said it (see
+   * runCollecting, conversation.ts; Giuseppe, 2026-09-15: "suppongo che
+   * un utente luxury... voglia sempre la soluzione più inclusiva"). */
   compromise:
     | {
-        kind: "price" | "date" | "date_unspecified" | "location_unspecified" | "budget_unspecified" | "sport_substituted";
+        kind:
+          | "price"
+          | "date"
+          | "date_unspecified"
+          | "location_unspecified"
+          | "budget_unspecified"
+          | "sport_substituted"
+          | "budget_profile_default";
         requested: string;
         offered: string;
       }
@@ -289,6 +303,14 @@ export interface ConversationState {
    * profile yet, or the profile never gave that field. */
   householdSizeHint: number | null;
   economicTierHint: "smart" | "pro" | "luxury" | null;
+  /** True for exactly one searchAndPropose() call: set the moment
+   * runCollecting() bypasses an unanswered budget question by filling
+   * slots.budgetTier from economicTierHint instead of leaving it null
+   * (which used to mean "assume cheapest" with no disclosure at all —
+   * Giuseppe, 2026-09-15). Consumed and reset to false as soon as that
+   * search's result is classified, so it never leaks into a later,
+   * unrelated proposal. */
+  budgetTierFromProfileDefault: boolean;
   /** Same idea as the two above, for the one slot that isn't under the
    * hard adults/budget precision policy — still never silently applied,
    * just makes the "che sport preferisci?" question a confirmable
