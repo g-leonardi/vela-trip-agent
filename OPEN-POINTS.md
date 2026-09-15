@@ -729,9 +729,13 @@ per il dettaglio ed esempi reali verificati.
 
 ## Deliverable ancora aperti
 
-- **Video 3-5 minuti** dell'acquisto reale end-to-end — **l'unico
-  deliverable ufficiale rimasto davvero aperto** a fine sessione;
-  Giuseppe lo sta montando fuori da questa sessione (2026-09-15).
+- ~~**Video 3-5 minuti** dell'acquisto reale end-to-end~~ — **fatto**:
+  completato e caricato da Giuseppe fuori da questa sessione
+  (2026-09-15) —
+  [link](https://drive.google.com/file/d/1S4O05OTqrWRv0pQcrD0aFnfBTy84vHeC/view).
+  Era l'ultimo deliverable ufficiale ancora aperto: con questo, tutti e
+  cinque i deliverable del brief (URL live, repo pubblica, ARCHITECTURE.md,
+  agent-log, load test) più il video sono chiusi.
 - ~~Key hunt oltre alla chiave 1~~ — **fatto da Giuseppe fuori da questa
   sessione**, tutte e 5 trovate (dettaglio in `KEY-HUNT.md`).
 - ~~Export finale di `/agent-log/`~~ — **fatto**: ultimo refresh

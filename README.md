@@ -5,7 +5,8 @@ of Journeys API reale. Non una chat al posto di una lista di risultati: un
 agente vocale a cui dici cosa vuoi in una frase, che negozia e propone
 un'opzione alla volta, e chiude un carrello reale.
 
-**Live**: https://vela-trip-agent.gleonardi87.workers.dev
+**Live**: https://vela-trip-agent.gleonardi87.workers.dev  
+**Video** (3-5 min, acquisto reale end-to-end): https://drive.google.com/file/d/1S4O05OTqrWRv0pQcrD0aFnfBTy84vHeC/view
 
 Decisioni, trade-off, bug reali trovati nell'API e numeri veri del load
 test sono in [`ARCHITECTURE.md`](./ARCHITECTURE.md) — è il documento che

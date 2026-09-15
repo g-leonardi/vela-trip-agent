@@ -47,8 +47,8 @@ successivi). Cloudflare Worker, account `gleonardi87@gmail.com`.
 6. **Comunicazione (5%)** — questo documento (aggiornato durante il
    lavoro, timestamp reali), `/agent-log/` (trascrizione grezza redatta
    più volte, verificata prima di ogni commit), un `README.md` minimale,
-   e un video 3-5 min dell'acquisto reale end-to-end (in lavorazione) —
-   vedi sezione 6.
+   e il [video](https://drive.google.com/file/d/1S4O05OTqrWRv0pQcrD0aFnfBTy84vHeC/view)
+   3-5 min dell'acquisto reale end-to-end — vedi sezione 6.
 
 ## 1. Prototipo funzionante (25%)
 - Flusso di booking reale che vogliamo far completare end-to-end:
@@ -2704,11 +2704,12 @@ se fosse ancora vero.
   i timestamp dei commit), `/agent-log/` per la trascrizione grezza della
   sessione, un `README.md` minimale come punto d'ingresso (link a questo
   documento + URL live + come far girare il progetto in locale, niente di
-  più), e il video finale (se il tempo lo permette) di un acquisto reale
-  end-to-end. Deliberatamente non abbiamo investito oltre questo minimo: a
-  peso 5% contro il 25%+25% di prototipo/scalabilità, la priorità
-  dichiarata dal brief stesso era chiudere il booking reale, non rifinire
-  la documentazione.
+  più), e il [video](https://drive.google.com/file/d/1S4O05OTqrWRv0pQcrD0aFnfBTy84vHeC/view)
+  finale di un acquisto reale end-to-end — **completato e caricato**
+  (2026-09-15). Deliberatamente non abbiamo investito oltre questo
+  minimo: a peso 5% contro il 25%+25% di prototipo/scalabilità, la
+  priorità dichiarata dal brief stesso era chiudere il booking reale,
+  non rifinire la documentazione.
 
 ---
 
