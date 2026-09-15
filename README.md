@@ -22,7 +22,7 @@ inventario/prezzi/prenotazioni.
 
 ```bash
 npm install
-npm run dev        # wrangler dev, richiede .dev.vars con HOFJ_API_KEY
+npm run dev        # wrangler dev, richiede .dev.vars con HOFJ_API_KEY e STRIPE_SECRET_KEY
 npm test           # vitest
 npm run typecheck
 npx wrangler deploy
